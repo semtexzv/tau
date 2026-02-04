@@ -12,7 +12,5 @@ path = "src/main.rs"
 tau-ai = { path = "../tau-ai" }
 tau-agent = { path = "../tau-agent" }
 tau-tui = { path = "../tau-tui" }
-tokio.workspace = true
-futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true

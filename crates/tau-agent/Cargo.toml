@@ -6,7 +6,5 @@ description = "Agent loop: tool execution, conversation, events"
 
 [dependencies]
 tau-ai = { path = "../tau-ai" }
-tokio.workspace = true
-futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true

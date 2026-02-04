@@ -1197,34 +1197,28 @@ dependencies = [
 name = "tau-agent"
 version = "0.1.0"
 dependencies = [
- "futures",
  "serde",
  "serde_json",
  "tau-ai",
- "tokio",
 ]
 
 [[package]]
 name = "tau-ai"
 version = "0.1.0"
 dependencies = [
- "futures",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
 name = "tau-cli"
 version = "0.1.0"
 dependencies = [
- "futures",
  "serde",
  "serde_json",
  "tau-agent",
  "tau-ai",
  "tau-tui",
- "tokio",
 ]
 
 [[package]]

@@ -1,9 +1,3 @@
-[submodule "vendor/async-io"]
-	path = vendor/async-io
-	url = https://github.com/smol-rs/async-io.git
-[submodule "vendor/async-executor"]
-	path = vendor/async-executor
-	url = https://github.com/smol-rs/async-executor.git
 [submodule "vendor/crossterm"]
 	path = vendor/crossterm
 	url = https://github.com/crossterm-rs/crossterm.git

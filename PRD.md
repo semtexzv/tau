@@ -651,24 +651,26 @@ idiomatic Rust async/await.
 - [x] `git add -A && git commit -m "feat: tau-rt and tau-iface (US-RT-001, US-RT-002)"`
 - [x] `git push origin master`
 
-### US-RT-002b: Vendor async crates with tau-rt backend feature [ ]
+### US-RT-002b: Vendor crossterm and HTTP crates with tau-rt backend [ ]
 
-**Description:** Vendor `async-io`, `async-executor`, and dependencies as git submodules.
-Patch them to add a `tau-rt` feature flag that replaces their internal globals
-(reactor singleton, driver thread) with calls through `tau-iface` externs.
-Workspace `[patch]` section points to vendored copies. PRs upstream come later.
+**Description:** Vendor `crossterm` and HTTP-related crates as git submodules.
+Patch them to replace their internal async runtime usage (tokio/async-io/mio)
+with `tau-iface` calls, so they run on the shared tau-rt reactor.
+We do NOT vendor low-level async primitives (`async-task`, `async-executor`, `async-io`) —
+tau-rt already provides the executor and reactor. We only patch the consumer libraries
+that need to do IO (terminal events, HTTP connections).
 
 **Acceptance Criteria:**
-- [ ] Git submodules under `vendor/` for the async ecosystem crates and key
-  dependencies that touch the runtime: `async-io`, `async-executor`, `polling`,
-  `crossterm`, HTTP client crate (e.g. `async-h1`, `isahc`, or `httparse`+`async-net`),
-  `rustls`/TLS if needed
-- [ ] Each vendored crate gets a `tau-rt` cargo feature. When enabled, internal
-  globals (reactor, driver threads, runtime detection) are replaced by
-  `tau-iface` calls
+- [ ] Git submodules under `vendor/` for:
+  - `crossterm` — patch `event-stream` feature to use `tau-iface::AsyncFd` on stdin
+    instead of `mio`/`polling`/`async-io` internally
+  - HTTP crate (e.g. `async-h1` or `hyper-lite`) if needed — patch to use
+    `tau-iface::TcpStream` instead of `tokio::net` or `async-net`
+  - `rustls`/TLS adapter if the TLS layer depends on a foreign runtime
+- [ ] Patches are minimal: only replace IO primitives, don't restructure crate internals
 - [ ] Workspace `[patch.crates-io]` maps to vendored paths
-- [ ] Ecosystem crates built on these (e.g. crossterm `event-stream`, HTTP
-  streaming) work transparently with the shared runtime
+- [ ] `crossterm::event::EventStream` works with tau-rt reactor (terminal key events arrive)
+- [ ] HTTP streaming (for SSE/Anthropic) works through tau-rt reactor
 - [ ] `cargo check --workspace` passes with vendored deps
 - [ ] No upstream PRs required at this stage — just local patches
 
