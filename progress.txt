@@ -272,3 +272,46 @@ Fix inserted as US-007a: TUI::stop() must move cursor from hardware_cursor_row t
   - Key forwarding: overlays checked first via reverse iteration, falls through to focused component only if no visible overlays
 ## Task self-review PASSED
 ---
+
+## Iteration 1 - US-REVIEW-PHASE2: Review components and overlays (US-009 through US-014)
+- What was done: Full review of 7 source files across US-009 through US-014 (spacer.rs, text.rs, box_component.rs, input.rs, select_list.rs, tui.rs overlay system, utils.rs SGR/slice additions). All 252 tests pass. Zero clippy errors (6 warnings: 2 type_complexity, 4 repeat_n).
+
+### Per-task findings:
+- US-009 (Spacer): PASS. Trivially correct. 6 tests.
+- US-010 (Text): PASS. Word wrapping with ANSI SGR tracking is correct. RefCell cache pattern appropriate. Padding_y lines are empty strings (intentional — vertical spacing only). 32 tests.
+- US-011 (BoxComponent): PASS. Clean container pattern with bg color decoration. All lines padded to full width. Empty children → empty result. 12 tests.
+- US-012 (Input): BUG FOUND — see below. Editing/keybindings/callbacks all correct. 28 tests (only ASCII).
+- US-013 (SelectList): PASS. Clean filtered_indices indirection. All lines padded. Wrapping/scrolling correct. 31 tests.
+- US-014 (Overlay): PASS. Compositing via splice_overlay_into_line is correct. SGR state tracking across splice boundaries works. Focus save/restore with nested overlays correct. Key forwarding to topmost visible overlay correct. 32 tests.
+
+### Bug found — Input cursor math with wide characters (US-012):
+Two related issues in `compute_scroll()` and render padding:
+
+1. **compute_scroll() conflates char indices with column widths**: `available` is in columns (e.g., 8 for terminal width 10), but `cursor` and `offset` are char indices. With wide chars (2 cols each), scrolling by 1 char position only removes 2 columns but the algorithm treats it as removing 1 column-equivalent.
+
+   Example: buffer = "你好世界测试编程代码" (10 chars, 20 cols), width=12, available=10.
+   compute_scroll(cursor=10, offset=0, available=10): returns offset=1. But chars[1..10] = "好世界测试编程代码" = 18 visible columns in 10 available columns → massive overflow.
+
+2. **Render padding uses char count instead of column width**: `content_width = PROMPT_WIDTH + vis_len.max(cursor_in_view + 1)` where `cursor_in_view + 1` counts chars, not columns. With cursor at end of "你好" (vis_len=4, cursor_in_view=2), content_width = 2+max(4,3) = 6, but actual visible content is 2+4+1=7 → padding is 1 column short → line overflows terminal width.
+
+Fix inserted as US-012a: Input scroll and padding must operate consistently in column widths.
+
+### Cross-task analysis:
+- Component trait API: Consistent across all components. render(&self) works with interior mutability (RefCell/Cell) where needed.
+- TUI<E> generic: Does NOT leak into Component trait. Components are E-agnostic. ✓
+- Full-width padding: All components pad content lines to full width (Spacer uses empty strings for spacing, which is intentional). ✓
+- Overlay compositing: splice handles wide chars at boundaries via truncate_to_width padding. ✓
+- Overlay focus: save/restore with nested overlays tested and correct. ✓
+- SelectList+overlay integration: Not explicitly tested but component model ensures it works — SelectList is a normal Component. ✓
+- visible_width: Used correctly in Text, BoxComponent, Input, SelectList, overlay splice. ✓
+- Duplicated padding patterns: Each component has slightly different padding logic (some have bg, some have left-pad). Not worth extracting a common helper.
+- Clippy warnings: 6 total (4x repeat_n modernization in SelectList, 2x type_complexity for callback types). Style only, not correctness.
+
+### Review result: ISSUES FOUND (1 bug → US-012a fix task inserted)
+- Learnings for future iterations:
+  - When a component tracks cursor position in char indices but renders in column widths, ALL math must be consistent. This is the same class of bug as hardware_cursor_row vs cursor_row in US-007.
+  - Input scroll tests only use ASCII — wide char scroll tests would have caught this immediately.
+  - The review criteria "Verify Input cursor math is correct with Unicode" is the right thing to check.
+  - Overlay compositing is surprisingly correct with ANSI codes — the slice_from_column + splice pattern handles edge cases well through design (using resets as boundaries).
+  - RefCell for caching in render(&self) is the standard pattern — all components that need it use it correctly.
+---

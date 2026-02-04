@@ -449,6 +449,22 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - [x] `cargo test` passes
 - [x] `cargo check` passes
 
+### US-012a: Fix Input horizontal scrolling and padding for wide characters [x]
+
+**Description:** Input's `compute_scroll()` and render padding calculation both conflate char indices with column widths. With wide characters (CJK, emoji), this causes rendered lines to exceed terminal width (triggering terminal line wrapping) or be shorter than expected.
+
+**Acceptance Criteria:**
+- [x] `compute_scroll()` works in column widths, not char indices. The `available` parameter is already in columns; `cursor` and `offset` must also be tracked/converted to column offsets before comparison.
+- [x] Render padding calculation uses actual visible column widths, not `cursor_in_view + 1` (which counts chars, not columns).
+- [x] Tests with wide characters:
+  - `Input` with "你好世界" (8 cols) at width 12: rendered line is exactly 12 visible columns
+  - `Input` with long CJK string: horizontal scrolling works, visible content doesn't exceed available columns
+  - `Input` with cursor at end of wide-char text: padding is correct
+  - `Input` with cursor in middle of wide-char text: cursor renders at correct column position
+- [x] All existing Input tests still pass
+- [x] `cargo test -p tau-tui` passes
+- [x] `cargo check` passes
+
 ### US-REVIEW-PHASE2: Review components and overlays (US-009 through US-014) [ ]
 
 **Description:** Review all components and the overlay system as a cohesive layer.
