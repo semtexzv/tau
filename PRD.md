@@ -549,9 +549,15 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 
 ### US-RT-001: tau-rt cdylib with reactor and executor [x]
 
-**Description:** As a developer, I need the core shared runtime library that owns
-the reactor (IO polling + timers) and a single-threaded task executor, exposed
-entirely through C ABI.
+**Description:** tau-rt is the **shared runtime cdylib** (`libtau_rt.dylib`/`.so`).
+It provides the core **reactor** (IO polling + timers) and **executor** (task queue).
+This is the low-level driver layer — no user-facing async types, only `#[no_mangle]`
+C ABI functions (`tau_rt_io_*`, `tau_rt_timer_*`, `tau_rt_spawn`, etc.).
+
+tau-rt and tau-iface share the same `#[no_mangle]` function interface. tau-rt provides
+the real implementations. tau-iface declares them as `extern "C"` functions. There is no
+Cargo dependency between them — they link through extern functions resolved at runtime
+by the OS dynamic linker.
 
 **Acceptance Criteria:**
 - [x] `crates/tau-rt/Cargo.toml`:
@@ -600,9 +606,16 @@ entirely through C ABI.
 
 ### US-RT-002: tau-iface safe wrapper crate [x]
 
-**Description:** As a developer, I need a pure-declaration crate that provides safe
-Rust wrappers around the tau-rt C ABI, so all other crates and extensions use
-idiomatic Rust async/await.
+**Description:** tau-iface is the **user-facing async crate**. It declares the same
+`#[no_mangle]` function symbols as tau-rt via `#[link(name = "tau_rt")]` externs —
+**no Cargo dependency on tau-rt**. The symbols resolve at load time when the app
+binary (which links tau-rt) runs.
+
+On top of those extern declarations, tau-iface provides all the user-facing async
+types: `AsyncFd`, `Timer`, `TcpStream`, `TcpListener`, `UdpSocket`, plus convenience
+functions (`spawn`, `sleep`, `block_on`). All other crates depend on tau-iface for
+async — they never depend on tau-rt directly. The extern functions resolve at runtime
+when the host binary (which links `libtau_rt`) loads.
 
 **Acceptance Criteria:**
 - [x] `crates/tau-iface/Cargo.toml`:
@@ -651,27 +664,21 @@ idiomatic Rust async/await.
 - [x] `git add -A && git commit -m "feat: tau-rt and tau-iface (US-RT-001, US-RT-002)"`
 - [x] `git push origin master`
 
-### US-RT-002b: Vendor crossterm and HTTP crates with tau-rt backend [ ]
+### US-RT-002b: Vendor crossterm with tau-rt backend [ ]
 
-**Description:** Vendor `crossterm` and HTTP-related crates as git submodules.
-Patch them to replace their internal async runtime usage (tokio/async-io/mio)
-with `tau-iface` calls, so they run on the shared tau-rt reactor.
-We do NOT vendor low-level async primitives (`async-task`, `async-executor`, `async-io`) —
-tau-rt already provides the executor and reactor. We only patch the consumer libraries
-that need to do IO (terminal events, HTTP connections).
+**Description:** Vendor `crossterm` as a git submodule. Patch its `event-stream`
+feature to use `tau-iface::AsyncFd` on stdin instead of `mio`/`polling`/`async-io`,
+so terminal event reading runs on the shared tau-rt reactor.
+HTTP crates are handled separately in US-RT-005 (tau-http is built from scratch on tau-iface).
 
 **Acceptance Criteria:**
-- [ ] Git submodules under `vendor/` for:
-  - `crossterm` — patch `event-stream` feature to use `tau-iface::AsyncFd` on stdin
-    instead of `mio`/`polling`/`async-io` internally
-  - HTTP crate (e.g. `async-h1` or `hyper-lite`) if needed — patch to use
-    `tau-iface::TcpStream` instead of `tokio::net` or `async-net`
-  - `rustls`/TLS adapter if the TLS layer depends on a foreign runtime
-- [ ] Patches are minimal: only replace IO primitives, don't restructure crate internals
-- [ ] Workspace `[patch.crates-io]` maps to vendored paths
+- [ ] Git submodule under `vendor/crossterm` (already added)
+- [ ] Patch crossterm's `event-stream` feature to use `tau-iface::AsyncFd` on stdin fd
+  instead of `mio`/`polling`/`async-io` internally
+- [ ] Patch is minimal: only replace the IO primitive, don't restructure crossterm internals
+- [ ] Workspace `[patch.crates-io]` maps crossterm to vendored path
 - [ ] `crossterm::event::EventStream` works with tau-rt reactor (terminal key events arrive)
-- [ ] HTTP streaming (for SSE/Anthropic) works through tau-rt reactor
-- [ ] `cargo check --workspace` passes with vendored deps
+- [ ] `cargo check --workspace` passes with vendored crossterm
 - [ ] No upstream PRs required at this stage — just local patches
 
 ### US-RT-003: Integration test — host and plugin share reactor [ ]
