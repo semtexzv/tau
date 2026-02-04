@@ -34,32 +34,33 @@ The event loop is async (tokio). The TUI is generic over a user event type `E`, 
   - `unicode-segmentation = "1.11"`
   - `tokio = { version = "1", features = ["rt", "macros", "sync"] }`
   - `futures = "0.3"` (for `StreamExt` on crossterm's `EventStream`)
+- [ ] Dev-dependencies: `image = "0.25"` (GIF decoding for load test example)
 - [x] Module structure in `src/`: `lib.rs`, `terminal.rs`, `utils.rs`, `component.rs`, `tui.rs`, `components/mod.rs`
 - [x] Each module file exists with a placeholder comment
 - [x] `cargo check` passes
 
-### US-002: Terminal trait and CrosstermTerminal [ ]
+### US-002: Terminal trait and CrosstermTerminal [x]
 
 **Description:** As a developer, I need a terminal abstraction so the rendering engine is decoupled from the actual terminal.
 
 **Acceptance Criteria:**
-- [ ] `Terminal` trait in `src/terminal.rs` with methods:
+- [x] `Terminal` trait in `src/terminal.rs` with methods:
   - `fn start(&mut self)` — enable raw mode, hide cursor
   - `fn stop(&mut self)` — disable raw mode, show cursor, move cursor past content
   - `fn write(&mut self, data: &str)` — write to stdout
   - `fn flush(&mut self)` — flush stdout
   - `fn size(&self) -> (u16, u16)` — returns `(cols, rows)`
   - `fn hide_cursor(&mut self)` / `fn show_cursor(&mut self)`
-- [ ] Note: event reading is NOT on the trait — crossterm's `EventStream` is used directly by the TUI run loop, and `MockTerminal` uses a channel. This keeps the trait sync and simple.
-- [ ] `CrosstermTerminal` struct implementing `Terminal` using `crossterm`
+- [x] Note: event reading is NOT on the trait — crossterm's `EventStream` is used directly by the TUI run loop, and `MockTerminal` uses a channel. This keeps the trait sync and simple.
+- [x] `CrosstermTerminal` struct implementing `Terminal` using `crossterm`
   - `start()`: enables raw mode, hides cursor
   - `stop()`: shows cursor, disables raw mode
   - `write()`: writes to stdout buffer with `io::Write`
   - `flush()`: flushes stdout
   - `size()`: delegates to `crossterm::terminal::size()`
-- [ ] `MockTerminal` struct implementing `Terminal` that captures writes to a `Vec<String>` for testing
-- [ ] Tests: both terminals can be constructed, MockTerminal captures writes
-- [ ] `cargo check` passes
+- [x] `MockTerminal` struct implementing `Terminal` that captures writes to a `Vec<String>` for testing
+- [x] Tests: both terminals can be constructed, MockTerminal captures writes
+- [x] `cargo check` passes
 
 ### US-003: ANSI escape code utilities [ ]
 
@@ -403,6 +404,33 @@ The event loop is async (tokio). The TUI is generic over a user event type `E`, 
 - [ ] Quit with Ctrl+C or Escape (when no overlay)
 - [ ] Demonstrates focus switching between Input and SelectList
 - [ ] `cargo run --example demo` works
+- [ ] `cargo check` passes
+
+### US-016: GIF-to-ANSI load test [ ]
+
+**Description:** As a developer, I want a load test that plays a DOOM GIF as ANSI-colored block art through the TUI, measuring rendering performance to verify the differential rendering engine is fast enough for real-world use.
+
+**Acceptance Criteria:**
+- [ ] `examples/loadtest.rs` using `#[tokio::main]`
+- [ ] Add dev-dependencies: `image = "0.25"` (GIF decoding + frame extraction)
+- [ ] Accepts a GIF file path as CLI argument: `cargo run --example loadtest -- doom.gif`
+- [ ] GIF frame → ANSI conversion:
+  - Decode each GIF frame into RGB pixels
+  - Scale frame to fit terminal dimensions (maintain aspect ratio, account for ~2:1 cell height:width ratio)
+  - Convert each pixel pair (top + bottom) to a `▀` (upper half block) character with truecolor ANSI: `\x1b[38;2;R;G;Bm\x1b[48;2;R;G;Bm▀` — packs 2 vertical pixels per cell
+  - Each frame becomes a `Vec<String>` of these colored lines
+- [ ] Playback loop using `event_tx` channel:
+  - Spawns a tokio task that sends `Frame(usize)` events at the GIF's native frame delay (or 30fps if unspecified)
+  - Handler updates a `Text`-like component with the current frame's pre-rendered lines
+  - TUI differential rendering picks up the changes
+- [ ] Performance measurement:
+  - Tracks per-frame render time (time from `render()` call start to `flush()` complete)
+  - Tracks bytes written per frame to terminal
+  - Displays an FPS counter and stats overlay (top-right corner): current FPS, avg frame time, avg bytes/frame
+  - On exit (Ctrl+C / Escape), prints summary to stderr: total frames, avg FPS, avg/p95/max frame time, avg bytes/frame
+- [ ] Pre-renders all frames on startup (conversion shouldn't be part of the render benchmark)
+- [ ] Quit with Ctrl+C or Escape
+- [ ] `cargo run --example loadtest -- doom.gif` works and shows smooth playback
 - [ ] `cargo check` passes
 
 ## Non-Goals
