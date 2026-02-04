@@ -490,20 +490,20 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
   - Append "## Phase 2 review PASSED" to progress.txt
   - Mark this review task [x]
 
-### US-015: Example application with async user events [ ]
+### US-015: Example application with async user events [x]
 
 **Description:** As a developer, I want a working example app that demonstrates all components and async user events so I can verify everything works together.
 
 **Acceptance Criteria:**
-- [ ] `examples/demo.rs` with a runnable app using `tau_iface::block_on`
+- [x] `examples/demo.rs` with a runnable app using `tau_iface::block_on`
   (initially may use `#[tokio::main]` — migrated to tau-rt in US-RT-006)
-- [ ] Shows: Text with styled content, Box with background, Input that echoes typed text
-- [ ] Demonstrates user events: spawns a task (via `tau_iface::spawn` after migration) that sends a timer event every second via `event_tx`, updating a counter in the UI
-- [ ] SelectList overlay triggered by a key (e.g., Ctrl+P)
-- [ ] Quit with Ctrl+C or Escape (when no overlay)
-- [ ] Demonstrates focus switching between Input and SelectList
-- [ ] `cargo run --example demo` works
-- [ ] `cargo check` passes
+- [x] Shows: Text with styled content, Box with background, Input that echoes typed text
+- [x] Demonstrates user events: spawns a task (via `tau_iface::spawn` after migration) that sends a timer event every second via `event_tx`, updating a counter in the UI
+- [x] SelectList overlay triggered by a key (e.g., Ctrl+P)
+- [x] Quit with Ctrl+C or Escape (when no overlay)
+- [x] Demonstrates focus switching between Input and SelectList
+- [x] `cargo run --example demo` works
+- [x] `cargo check` passes
 
 ### US-016: GIF-to-ANSI load test [ ]
 
