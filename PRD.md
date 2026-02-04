@@ -664,30 +664,34 @@ when the host binary (which links `libtau_rt`) loads.
 - [x] `git add -A && git commit -m "feat: tau-rt and tau-iface (US-RT-001, US-RT-002)"`
 - [x] `git push origin master`
 
-### US-RT-002b: Vendor crossterm with tau-rt backend [ ]
+### US-RT-002b: tau-mio — mio API frontend backed by tau-rt [ ]
 
-**Description:** Vendor `crossterm` as a git submodule. Patch its `event-stream`
-feature to use `tau-iface::AsyncFd` on stdin instead of `mio`/`polling`/`async-io`,
-so terminal event reading runs on the shared tau-rt reactor.
-HTTP crates are handled separately in US-RT-005 (tau-http is built from scratch on tau-iface).
+**Description:** Create a `tau-mio` crate that implements `mio`'s public API (`Poll`,
+`Registry`, `Events`, `Token`, `Interest`, `event::Source`) but backed by tau-rt's
+reactor via tau-iface. This is **not a fork of mio** — it's a clean-room crate that
+matches mio's API surface so that consumers like crossterm can use it via
+`[patch.crates-io] mio = { path = "crates/tau-mio" }` without any source changes.
 
-This task may require extending the tau-rt/tau-iface C ABI with additional
-`#[no_mangle]` functions if crossterm needs primitives not yet exposed (e.g.
-edge-triggered vs level-triggered polling, interest modification, readiness caching).
-Any new functions must be added to **both** tau-rt (implementation) and tau-iface
-(extern declaration + safe wrapper) to keep the interfaces in sync.
+This approach avoids patching crossterm internals entirely — crossterm already depends
+on mio, we just swap what mio resolves to. May require extending the tau-rt/tau-iface
+C ABI if mio's API needs primitives not yet exposed (e.g. interest modification,
+edge-triggered mode). Any new functions must be added to both tau-rt and tau-iface.
 
 **Acceptance Criteria:**
-- [ ] Git submodule under `vendor/crossterm` (already added)
-- [ ] Patch crossterm's `event-stream` feature to use `tau-iface::AsyncFd` on stdin fd
-  instead of `mio`/`polling`/`async-io` internally
-- [ ] If crossterm needs new runtime primitives: add `#[no_mangle]` exports to tau-rt
-  and matching extern declarations + safe wrappers to tau-iface
-- [ ] Workspace `[patch.crates-io]` maps crossterm to vendored path
-- [ ] `crossterm::event::EventStream` works with tau-rt reactor (terminal key events arrive)
-- [ ] `cargo check --workspace` passes with vendored crossterm
+- [ ] `crates/tau-mio/Cargo.toml` with `name = "mio"` (so it patches the real mio)
+- [ ] Implements mio's core API surface:
+  - `Poll::new()`, `poll(&mut self, events, timeout)`
+  - `Registry::register()`, `reregister()`, `deregister()`
+  - `Events` iterator
+  - `Token`, `Interest` (READABLE, WRITABLE)
+  - `event::Source` trait
+- [ ] Backed by tau-iface: `Poll::poll()` calls `tau_iface::react()`, IO registration
+  delegates to `tau_rt_io_register`/`tau_rt_io_poll_*`
+- [ ] If new runtime primitives needed: add `#[no_mangle]` to tau-rt + externs to tau-iface
+- [ ] Workspace `[patch.crates-io]` maps `mio` to `crates/tau-mio`
+- [ ] `cargo check --workspace` passes (crossterm resolves to tau-mio transparently)
+- [ ] `crossterm::event::EventStream` works with tau-rt reactor
 - [ ] All existing tau-tui tests still pass
-- [ ] No upstream PRs required at this stage — just local patches
 
 ### US-RT-003: Integration test — host and plugin share reactor [ ]
 
