@@ -362,3 +362,48 @@ Fix inserted as US-012a: Input scroll and padding must operate consistently in c
   - The overlay splice pattern (reset boundaries + SGR re-application) is elegant and handles edge cases through design, not special-case code
   - compute_scroll's O(n) loop is acceptable for terminal input — could be optimized later if needed
 ---
+
+## Iteration 4 - US-015: Example application with async user events
+- What was done: Created `crates/tau-tui/examples/demo.rs` — a working demo app demonstrating all tau-tui components and async user events. Uses `#[tokio::main(flavor = "current_thread")]` (will be migrated to `tau_iface::block_on` in US-RT-006).
+- Files changed: crates/tau-tui/examples/demo.rs (new), PRD.md (criteria marked [x])
+- Features demonstrated:
+  - Text with styled ANSI content (bold+cyan header)
+  - BoxComponent with dark background containing a live counter
+  - Input that echoes typed text via on_submit callback
+  - Async user events: std::thread sends DemoEvent::Tick every second via event_tx
+  - SelectList overlay triggered by Ctrl+P (7 language items, on_select updates echo)
+  - Focus switching: Input normally focused, overlay gets input when shown
+  - Quit with Ctrl+C (always) or Escape (when no overlay)
+- Learnings for future iterations:
+  - Shared state via Rc<Cell>/Rc<RefCell> is the idiomatic pattern for dynamic components in single-threaded TUI — custom components read from shared state on each render()
+  - Component trait has no as_any() for downcasting, so you can't modify components after adding them to a Container — must use shared state or callbacks set before adding
+  - std::thread::spawn + std::thread::sleep is simpler than tokio::spawn + tokio::time::sleep for timer — no extra tokio features needed, and UnboundedSender is Send+Sync
+  - #[tokio::main(flavor = "current_thread")] needed since workspace tokio only has "rt" feature, not "rt-multi-thread"
+  - SelectList overlay interaction pattern: on_select callback fires on Enter (key forwarded to overlay first), then handler sees Enter and calls hide_overlay() — clean two-phase coordination
+  - Input's on_submit callback must be set before adding to container (can't access afterward without downcast)
+## Task self-review PASSED
+---
+
+## Iteration 5 - US-016: GIF-to-ANSI load test
+- What was done: Created `crates/tau-tui/examples/loadtest.rs` — a load test that plays animated GIFs as ANSI-colored half-block art through the TUI, measuring differential rendering performance. Added `image = "0.25"` as dev-dependency. Also marked the deferred US-001 dev-dep criterion.
+- Files changed: crates/tau-tui/examples/loadtest.rs (new), crates/tau-tui/Cargo.toml (image dev-dep), PRD.md (criteria marked [x])
+- Features implemented:
+  - GIF-to-ANSI conversion: decode RGBA frames, scale to terminal dimensions (aspect-aware, 2:1 cell ratio), convert pixel pairs to `▀` half-block chars with truecolor ANSI
+  - Pre-renders all frames at startup (decoding not in render hot path)
+  - FrameComponent reads current frame index from Rc<Cell<usize>>, renders pre-computed ANSI lines
+  - TimingTerminal wraps CrosstermTerminal, measures write→flush duration and byte count per render via Rc<RefCell<PerfStats>>
+  - StatsComponent overlay (top-right, yellow bg) shows live FPS, avg frame time, avg bytes/frame
+  - Playback thread sends Frame(usize) events at GIF's native delay (30fps fallback for zero-delay frames)
+  - On exit: prints summary to stderr (total frames, avg FPS, avg/p95/max frame time, avg bytes/frame)
+  - CLI argument for GIF path, error handling for file/decode failures
+  - Quit with Ctrl+C or Escape
+- Learnings for future iterations:
+  - TimingTerminal wrapper is a clean pattern for measuring render performance — intercepts at write/flush level, shares stats via Rc<RefCell>
+  - Rc<Vec<PreRenderedFrame>> can't cross thread boundaries — extract delays as Vec<Duration> for the playback thread
+  - `image::AnimationDecoder::into_frames()` yields fully-composited RGBA frames (handles GIF disposal methods internally) — no manual compositing needed
+  - `frame.delay().into()` converts to std::time::Duration; some GIFs have 0 delay, need fallback
+  - Half-block `▀` technique: foreground = top pixel, background = bottom pixel, packs 2 vertical pixels per cell — standard ANSI art approach
+  - Nearest-neighbor scaling via `(px / scale).floor()` is fast and sufficient for terminal art
+  - Stats overlay uses Anchor::TopRight which is already supported by the overlay system
+## Task self-review PASSED
+---
