@@ -52,3 +52,15 @@
   - `saturating_sub` handles edge case where ellipsis is wider than max_width
 ## Task self-review PASSED
 ---
+
+## Iteration 5 - US-005: Component trait and Container
+- What was done: Implemented `Component` trait (render required, handle_input + invalidate with defaults) and `Container` struct (Vec<Box<dyn Component>>, add_child, remove_child, clear, render concatenation, invalidate propagation). Wrote 11 tests including empty container, concatenation, remove/clear, default/len/is_empty, invalidation, empty child, trait defaults, and object safety.
+- Files changed: src/component.rs, PRD.md
+- Learnings for future iterations:
+  - Component trait is object-safe — `Box<dyn Component>` works (verified with test)
+  - Container.render() simply extends a Vec from each child — no special casing needed
+  - Can't inspect trait object internals through Box<dyn Component> (e.g., can't check MockComponent.invalidated) — design tests around observable behavior instead
+  - `Default` impl provided for Container (Clippy will want this if `new()` exists)
+  - Container also exposes `len()` and `is_empty()` for convenience
+## Task self-review PASSED
+---

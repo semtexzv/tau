@@ -5,6 +5,7 @@
 // EventStream is used directly by the TUI run loop, and MockTerminal uses
 // a channel. This keeps the trait sync and simple.
 
+use std::any::Any;
 use std::io::{self, Write as IoWrite};
 
 /// Abstraction over terminal I/O for rendering.
@@ -23,6 +24,10 @@ pub trait Terminal {
     fn hide_cursor(&mut self);
     /// Show the terminal cursor.
     fn show_cursor(&mut self);
+    /// Downcast support for testing.
+    fn as_any(&self) -> &dyn Any;
+    /// Downcast support for testing (mutable).
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Real terminal implementation using crossterm.
@@ -73,6 +78,14 @@ impl Terminal for CrosstermTerminal {
 
     fn show_cursor(&mut self) {
         crossterm::execute!(self.stdout, crossterm::cursor::Show).ok();
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 
@@ -141,6 +154,14 @@ impl Terminal for MockTerminal {
 
     fn show_cursor(&mut self) {
         self.cursor_visible = true;
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

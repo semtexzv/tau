@@ -1,15 +1,31 @@
-# PRD: rtui — Simple Rust TUI Library
+# PRD: tau — Extensible LLM Agent in Rust
 
 ## Introduction
 
-A minimal terminal UI library in Rust inspired by [pi-mono's `@mariozechner/pi-tui`](https://github.com/badlogic/pi-mono/tree/main/packages/tui). The library uses a component-based architecture with differential rendering — components return lines of text, the engine diffs against the previous frame and only redraws what changed.
+**tau** is a Rust monorepo for building extensible LLM-powered coding agents, inspired by [pi-mono](https://github.com/badlogic/pi-mono). It follows the same layered architecture:
 
-The design follows a scrolling model (not alternate screen): content grows downward, only the bottom viewport is visible, and the terminal scrollback is preserved.
+| pi-mono package | tau crate | Purpose |
+|---|---|---|
+| `@mariozechner/pi-tui` | `tau-tui` | Terminal UI with differential rendering |
+| `@mariozechner/pi-ai` | `tau-ai` | LLM abstraction: types, streaming, providers |
+| `@mariozechner/pi-agent-core` | `tau-agent` | Agent loop: tool execution, conversation, events |
+| `@mariozechner/pi-coding-agent` | `tau-cli` | Coding agent: tools, system prompt, interactive TUI |
 
-The event loop is async (tokio). The TUI is generic over a user event type `E`, providing an `mpsc::UnboundedSender<E>` that can be cloned and sent to spawned tasks. The main loop `select!`s on crossterm terminal events and user events, rendering after each. This lets applications respond to network IO, timers, or any async work.
+The project starts with Anthropic as the sole LLM provider (Messages API with SSE streaming), but the provider trait is designed for extensibility.
+
+```
+~/tau/
+  Cargo.toml            (workspace)
+  crates/
+    tau-tui/            (terminal UI library)
+    tau-ai/             (LLM abstraction + Anthropic provider)
+    tau-agent/          (agent loop + tool framework)
+    tau-cli/            (coding agent binary)
+```
 
 ## Goals
 
+### tau-tui
 - Provide a `Component` trait where `render(width) → Vec<String>` is the only required method
 - Differential rendering: compare previous vs. new lines, emit only changed lines via ANSI cursor movement
 - Correct visible-width calculation for Unicode (wide chars, emoji, grapheme clusters) and ANSI escape codes
@@ -18,7 +34,61 @@ The event loop is async (tokio). The TUI is generic over a user event type `E`, 
 - Ship basic components: Text (word-wrap), Box (padding/bg), Spacer, Input (single-line), SelectList
 - Async event loop with tokio — `select!` on terminal events + user event channel
 - User event channel: `TUI<E>` provides `UnboundedSender<E>` for applications to push custom events from spawned tasks
-- Minimal dependencies: `crossterm`, `unicode-width`, `unicode-segmentation`, `tokio`
+
+### tau-ai
+- Unified message types: `UserMessage`, `AssistantMessage`, `ToolResultMessage` with text, thinking, image, and tool-call content blocks
+- `Provider` trait: `fn stream(model, context, options) → Stream<StreamEvent>` — async at the IO boundary only
+- Anthropic Messages API: async HTTP POST via `reqwest`, SSE parsing, posts `StreamEvent`s to a channel
+- Tool definitions with JSON Schema parameters (via `schemars`)
+- Usage tracking (tokens, cost)
+
+### tau-agent
+- **Sync core:** `Agent` is a state machine. All state transitions happen synchronously when events arrive. No async in the agent logic itself.
+- `AgentTool` trait: sync definition + async `execute()` (runs in spawned tasks, posts results back)
+- Event-driven loop: async IO (HTTP streaming, tool execution) happens in spawned tasks → posts `AgentEvent`s to TUI's `event_tx` channel → TUI handler calls sync `agent.handle_event()` → state transitions + render
+- `AgentEvent` enum for UI to observe lifecycle (turn start/end, tool execution, streaming deltas)
+- Steering: interrupt the agent mid-run with new user messages
+
+### tau-cli
+- Coding tools: read, write, edit, bash
+- System prompt for coding tasks
+- Interactive TUI mode tying everything together
+
+### Architecture: Sync Core + Async IO Edges
+
+```
+┌─────────────────────────────────────────────────┐
+│  TUI async select loop                          │
+│  ┌───────────────┐   ┌───────────────────────┐  │
+│  │ crossterm      │   │ event_rx (channel)    │  │
+│  │ key/resize     │   │ AgentEvents from      │  │
+│  │                │   │ spawned tasks         │  │
+│  └───────┬───────┘   └───────────┬───────────┘  │
+│          │                       │               │
+│          └───────┬───────────────┘               │
+│                  ▼                               │
+│  ┌─────────────────────────────┐                 │
+│  │  SYNC handler               │                 │
+│  │  agent.handle_event(e)      │  ← pure state   │
+│  │  update components          │    transitions   │
+│  │  tui.render()               │                 │
+│  └──────────┬──────────────────┘                 │
+│             │ returns actions                    │
+│             ▼                                    │
+│  ┌─────────────────────────────┐                 │
+│  │  tokio::spawn async tasks   │  ← IO edges     │
+│  │  • HTTP stream to Anthropic │    only          │
+│  │  • bash process execution   │                 │
+│  │  • file read/write          │                 │
+│  │  posts results → event_tx   │                 │
+│  └─────────────────────────────┘                 │
+└─────────────────────────────────────────────────┘
+```
+
+The `Agent` struct never awaits. It receives events, updates state, and returns `Vec<AgentAction>` describing what async work to spawn next. The caller (TUI handler) spawns the tasks.
+
+### General
+- Minimal dependencies: `crossterm`, `unicode-width`, `unicode-segmentation`, `tokio`, `reqwest`, `serde`, `schemars`
 
 ## User Stories
 
@@ -126,12 +196,12 @@ The event loop is async (tokio). The TUI is generic over a user event type `E`, 
 - [x] `cargo test` passes
 - [x] `cargo check` passes
 
-### US-006: TUI engine with full rendering [ ]
+### US-006: TUI engine with full rendering [x]
 
 **Description:** As a developer, I need the TUI engine that renders a component tree to the terminal, initially with full redraws (differential rendering comes next).
 
 **Acceptance Criteria:**
-- [ ] `TUI<E>` struct in `src/tui.rs`, generic over user event type `E: Send + 'static`
+- [x] `TUI<E>` struct in `src/tui.rs`, generic over user event type `E: Send + 'static`
   - Wraps a `Box<dyn Terminal>` and a root `Container`
   - `new(terminal) -> Self`
   - `root(&mut self) -> &mut Container` — access to root container
@@ -139,13 +209,13 @@ The event loop is async (tokio). The TUI is generic over a user event type `E`, 
   - `start(&mut self)` — calls `terminal.start()`
   - `stop(&mut self)` — moves cursor past content, calls `terminal.stop()`
   - `event_tx(&self) -> UnboundedSender<E>` — returns cloneable sender for user events
-- [ ] Rendering builds a **single `String` buffer** with all output (cursor moves, line clears, content), then calls `terminal.write(&buffer)` + `terminal.flush()` **once** — never multiple writes per frame
-- [ ] Buffer is wrapped in synchronized output (`\x1b[?2026h` at start, `\x1b[?2026l` at end)
-- [ ] Each line gets `\x1b[0m` appended (reset, prevents style bleeding)
-- [ ] Stores `previous_lines: Vec<String>` and `previous_width: u16` for next story's diffing
-- [ ] Tests: TUI with MockTerminal renders expected output
-- [ ] `cargo test` passes
-- [ ] `cargo check` passes
+- [x] Rendering builds a **single `String` buffer** with all output (cursor moves, line clears, content), then calls `terminal.write(&buffer)` + `terminal.flush()` **once** — never multiple writes per frame
+- [x] Buffer is wrapped in synchronized output (`\x1b[?2026h` at start, `\x1b[?2026l` at end)
+- [x] Each line gets `\x1b[0m` appended (reset, prevents style bleeding)
+- [x] Stores `previous_lines: Vec<String>` and `previous_width: u16` for next story's diffing
+- [x] Tests: TUI with MockTerminal renders expected output
+- [x] `cargo test` passes
+- [x] `cargo check` passes
 
 ### US-007: Differential rendering [ ]
 
