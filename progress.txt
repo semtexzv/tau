@@ -407,3 +407,39 @@ Fix inserted as US-012a: Input scroll and padding must operate consistently in c
   - Stats overlay uses Anchor::TopRight which is already supported by the overlay system
 ## Task self-review PASSED
 ---
+
+## Iteration 6 - US-RT-001: tau-rt cdylib with reactor and executor
+- What was done: Created `crates/tau-rt/` — a cdylib-only crate implementing the shared async runtime. Reactor owns the OS poller (via `polling` crate) and a timer heap. Executor manages a single-threaded task queue via `ConcurrentQueue<Runnable>`. All 11 C ABI functions exported via `#[no_mangle] extern "C"`. 11 unit tests including DV-1 verification (counter increment + 50ms timer test).
+- Files changed: crates/tau-rt/Cargo.toml (new), crates/tau-rt/src/lib.rs (new), crates/tau-rt/src/reactor.rs (new), crates/tau-rt/src/executor.rs (new), crates/tau-rt/src/ffi.rs (new), PRD.md, AGENTS.md
+- Learnings for future iterations:
+  - `async_task::spawn_local` panics when Runnables are run/dropped on different threads — must use `async_task::spawn` instead for global executor (FfiFuture is Send anyway)
+  - Global executor tests need `Mutex<()>` serialization guard + queue drain at test start — the ConcurrentQueue is shared across parallel test threads
+  - `unsafe impl Sync for Reactor` was UNNECESSARY — Reactor auto-derives Sync because all fields are Sync (Poller) or wrapped in Mutex (which only needs T: Send)
+  - `Events` from polling is `Send` but `!Sync` (via `PhantomData<Cell<()>>`), but `Mutex<Events>` is `Sync` because Mutex only requires `T: Send`
+  - IO sources lazily registered with OS poller: `io_register` only adds to slab, first `io_poll_readable/writable` calls `Poller::add`. This avoids platform-specific issues with `Event::none` registration
+  - `FfiContext::with_context()` is an inherent method, NOT from the `ContextExt` trait — don't import `ContextExt`
+  - In polling 3, `Event` has public fields (key, readable, writable) and constructors like `Event::new(key, readable, writable)`
+  - `Poller::add` takes `impl AsRawSource` (accepts raw fd directly on Unix), while `modify`/`delete` take `impl AsSource` (needs `BorrowedFd`)
+  - `events.clear()` before `poller.wait()` is needed — wait() appends to the buffer, doesn't replace
+  - Timer dual data structure (BTreeMap + HashMap) is essential: BTreeMap for ordered expiry scan, HashMap for O(1) handle→deadline lookup
+  - cdylib crate-type doesn't prevent `cargo test` — the test harness compiles the crate differently than the library output
+## Task self-review PASSED
+---
+
+## Iteration 7 - US-RT-002: tau-iface safe wrapper crate
+- What was done: Created `crates/tau-iface/` — a pure-declaration crate providing safe Rust wrappers around the tau-rt C ABI. No dependency on tau-rt; linked at load time via `#[link(name = "tau_rt")]`. Added `libc = "0.2"` for raw socket operations. All 11 FFI declarations mirror tau-rt exports exactly. 6 modules: ffi.rs, async_fd.rs, timer.rs, tcp.rs, udp.rs, lib.rs. 4 unit tests for socket address conversion (roundtrip v4, roundtrip v6, specific v4, unknown family error). Zero clippy warnings. `cargo check -p tau-iface` passes cleanly.
+- Files changed: crates/tau-iface/Cargo.toml (new), crates/tau-iface/src/lib.rs (new), crates/tau-iface/src/ffi.rs (new), crates/tau-iface/src/async_fd.rs (new), crates/tau-iface/src/timer.rs (new), crates/tau-iface/src/tcp.rs (new), crates/tau-iface/src/udp.rs (new), PRD.md
+- Learnings for future iterations:
+  - `#[link(name = "tau_rt")]` extern block only affects linking, not `cargo check` — so type-checking works without libtau_rt.dylib present
+  - `async_ffi::ContextExt` trait provides `with_ffi_context()` on `std::task::Context` — this is how safe wrappers bridge the FFI gap: `cx.with_ffi_context(|ffi_cx| unsafe { ffi_fn(handle, ffi_cx as *mut _) })`
+  - `async_ffi::FutureExt::into_ffi()` wraps a `Future + Send + 'static` into `FfiFuture<T>` with one heap allocation
+  - AsyncFd does NOT own the fd — it only manages reactor registration. TcpStream/TcpListener/UdpSocket use OwnedFd for fd lifecycle.
+  - Drop ordering matters: struct fields drop in declaration order. `async_fd` declared before `fd` ensures reactor deregistration happens before fd close.
+  - Socket address conversion: `u32::from_ne_bytes(octets)` correctly preserves network byte order in memory layout on both LE and BE platforms
+  - macOS has `sin_len`/`sin6_len` fields in sockaddr structures — use `#[cfg(target_os = "macos")]` to set them
+  - macOS doesn't have `SOCK_NONBLOCK` flag — use `fcntl(F_SETFL, O_NONBLOCK)` instead
+  - `react(None)` maps to `u64::MAX` ms timeout in the C ABI — effectively infinite (584M years)
+  - `libc` crate needed for TCP/UDP implementations (raw socket, connect, recv, send, etc.) — added as additional dep beyond what PRD listed
+  - `cargo test -p tau-iface` requires `LIBRARY_PATH=target/debug` to find libtau_rt.dylib at link time
+## Task self-review PASSED
+---

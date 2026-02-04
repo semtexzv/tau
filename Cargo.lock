@@ -1228,6 +1228,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-iface"
+version = "0.1.0"
+dependencies = [
+ "async-ffi",
+ "libc",
+]
+
+[[package]]
 name = "tau-rt"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,10 @@
+[package]
+name = "tau-iface"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-ffi = "0.5"
+libc = "0.2"
+
+# NO dependency on tau-rt. Linked at load time via #[link(name = "tau_rt")]

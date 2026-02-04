@@ -598,51 +598,56 @@ entirely through C ABI.
   assert counter incremented. Timer test: create timer 50ms, call `react()` in loop, assert
   future completes within 55ms.
 
-### US-RT-002: tau-iface safe wrapper crate [ ]
+### US-RT-002: tau-iface safe wrapper crate [x]
 
 **Description:** As a developer, I need a pure-declaration crate that provides safe
 Rust wrappers around the tau-rt C ABI, so all other crates and extensions use
 idiomatic Rust async/await.
 
 **Acceptance Criteria:**
-- [ ] `crates/tau-iface/Cargo.toml`:
+- [x] `crates/tau-iface/Cargo.toml`:
   ```toml
   [dependencies]
   async-ffi = "0.5"
   
   # NO dependency on tau-rt. Linked at load time via #[link(name = "tau_rt")]
   ```
-- [ ] `crates/tau-iface/src/ffi.rs`:
+- [x] `crates/tau-iface/src/ffi.rs`:
   - `#[link(name = "tau_rt")]` extern "C" block declaring every `tau_rt_*` function
   - Mirrors tau-rt's exports exactly
-- [ ] `crates/tau-iface/src/async_fd.rs` — `AsyncFd` struct:
+- [x] `crates/tau-iface/src/async_fd.rs` — `AsyncFd` struct:
   - `new(fd: RawFd) -> io::Result<Self>` — calls `tau_rt_io_register`
   - `async fn readable(&self) -> io::Result<()>` — polls via `tau_rt_io_poll_readable`
   - `async fn writable(&self) -> io::Result<()>` — polls via `tau_rt_io_poll_writable`
   - `Drop` calls `tau_rt_io_deregister`
-- [ ] `crates/tau-iface/src/timer.rs` — `Timer` struct:
+- [x] `crates/tau-iface/src/timer.rs` — `Timer` struct:
   - `after(duration: Duration) -> Self` — calls `tau_rt_timer_create`
   - `impl Future for Timer` — polls via `tau_rt_timer_poll`
   - `Drop` calls `tau_rt_timer_cancel`
-- [ ] `crates/tau-iface/src/tcp.rs` — `TcpStream` and `TcpListener`:
+- [x] `crates/tau-iface/src/tcp.rs` — `TcpStream` and `TcpListener`:
   - `TcpStream::connect(addr) -> io::Result<Self>` — non-blocking socket + `AsyncFd`, await writable for connect completion
   - `async fn read(&self, buf) -> io::Result<usize>` — await readable, then `recv()`
   - `async fn write(&self, buf) -> io::Result<usize>` — await writable, then `send()`
   - `TcpListener::bind(addr)` + `async fn accept()`
-- [ ] `crates/tau-iface/src/udp.rs` — `UdpSocket`:
+- [x] `crates/tau-iface/src/udp.rs` — `UdpSocket`:
   - `bind(addr) -> io::Result<Self>` — non-blocking socket + `AsyncFd`
   - `async fn send_to(&self, buf, addr) -> io::Result<usize>`
   - `async fn recv_from(&self, buf) -> io::Result<(usize, SocketAddr)>`
   - `connect(addr)` + `async fn send()` / `async fn recv()` for connected mode
-- [ ] `crates/tau-iface/src/lib.rs` — re-exports + convenience:
+- [x] `crates/tau-iface/src/lib.rs` — re-exports + convenience:
   - `pub fn spawn(future)` — wraps in `FfiFuture`, calls `tau_rt_spawn`
   - `pub async fn sleep(duration)` — `Timer::after(duration).await`
   - `pub fn block_on(future)` — wraps in `FfiFuture`, calls `tau_rt_block_on`
   - `pub fn try_tick() -> bool` — calls `tau_rt_try_tick`
   - `pub fn react(timeout) -> io::Result<()>` — calls `tau_rt_react`
-- [ ] No statics, no globals, no thread-locals anywhere in this crate
-- [ ] `cargo check -p tau-iface` passes (link errors are expected without tau-rt.so present;
+- [x] No statics, no globals, no thread-locals anywhere in this crate
+- [x] `cargo check -p tau-iface` passes (link errors are expected without tau-rt.so present;
   the real test is in US-RT-003)
+
+### GIT-PUSH: Push US-RT-001 through US-RT-002 [ ]
+**Acceptance Criteria:**
+- [ ] `git add -A && git commit -m "feat: tau-rt and tau-iface (US-RT-001, US-RT-002)"`
+- [ ] `git push origin master`
 
 ### US-RT-002b: Vendor async crates with tau-rt backend feature [ ]
 
@@ -689,6 +694,11 @@ executor, and timer heap.
   that does async TCP connect + read + returns byte count. Host spawns it, drives executor,
   receives the result.
 - [ ] `run_test.sh` exits 0 on success, non-zero with clear error on failure
+
+### GIT-PUSH: Push US-RT-002b and US-RT-003 [ ]
+**Acceptance Criteria:**
+- [ ] `git add -A && git commit -m "feat: vendored async crates + integration tests (US-RT-002b, US-RT-003)"`
+- [ ] `git push origin master`
 
 ### US-RT-004: Dependency enforcement and forbidden-dep check [ ]
 
@@ -785,6 +795,11 @@ tau-iface so the TUI crate uses the shared runtime.
 - [ ] `cargo check -p tau-tui` passes
 - [ ] `ci/check-deps.sh` passes (no tokio in tree)
 
+### GIT-PUSH: Push US-RT-004 through US-RT-006 [ ]
+**Acceptance Criteria:**
+- [ ] `git add -A && git commit -m "feat: dep enforcement, tau-http, TUI migration (US-RT-004, US-RT-005, US-RT-006)"`
+- [ ] `git push origin master`
+
 ### US-REVIEW-PHASE2B: Review tau-rt foundation (US-RT-001 through US-RT-006) [ ]
 
 **Description:** Review the shared runtime, interface crate, HTTP client, and TUI
@@ -833,6 +848,11 @@ migration as a cohesive layer before building the AI and agent layers on top.
 - [ ] All existing TUI tests still pass: `cargo test -p tau-tui`
 - [ ] `cargo check --workspace` passes (except tau-rt which builds separately)
 - [ ] No tokio, reqwest, or forbidden deps in `[workspace.dependencies]`
+
+### GIT-PUSH: Push Phase 2b review and workspace restructure [ ]
+**Acceptance Criteria:**
+- [ ] `git add -A && git commit -m "chore: phase 2b review + workspace restructure (US-REVIEW-PHASE2B, US-017)"`
+- [ ] `git push origin master`
 
 ### US-018: tau-ai core message types [ ]
 
