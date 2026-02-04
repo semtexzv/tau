@@ -1,5 +1,8 @@
 // ANSI escape code utilities and visible width calculation.
 
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
 const ESC: u8 = 0x1b;
 const BEL: u8 = 0x07;
 
@@ -105,6 +108,87 @@ pub fn strip_ansi(s: &str) -> String {
         } else {
             i += 1;
         }
+    }
+
+    result
+}
+
+/// Calculate the visible width of a string in terminal columns.
+///
+/// Strips ANSI escape codes, then measures using Unicode width rules.
+/// Tabs are counted as 3 spaces (matching pi-mono convention).
+pub fn visible_width(s: &str) -> usize {
+    let stripped = strip_ansi(s);
+    stripped
+        .chars()
+        .map(|c| {
+            if c == '\t' {
+                3
+            } else {
+                // UnicodeWidthStr works on &str slices; use char-level width
+                let mut buf = [0u8; 4];
+                let s = c.encode_utf8(&mut buf);
+                UnicodeWidthStr::width(s)
+            }
+        })
+        .sum()
+}
+
+/// Truncate a string to fit within `max_width` visible columns, appending
+/// `ellipsis` if the string was truncated.
+///
+/// Preserves ANSI escape codes (they don't count toward width).
+/// Grapheme-cluster-aware: never splits a multi-byte character.
+///
+/// If `max_width` is smaller than the ellipsis width, returns a truncation
+/// to exactly `max_width` columns with no ellipsis.
+pub fn truncate_to_width(s: &str, max_width: usize, ellipsis: &str) -> String {
+    let full_visible = visible_width(s);
+    if full_visible <= max_width {
+        return s.to_string();
+    }
+
+    let ellipsis_width = visible_width(ellipsis);
+    let content_budget = max_width.saturating_sub(ellipsis_width);
+
+    let bytes = s.as_bytes();
+    let mut result = String::with_capacity(s.len());
+    let mut current_width: usize = 0;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // Pass through ANSI escape codes without counting width
+        if bytes[i] == ESC {
+            if let Some((code, len)) = extract_ansi_code(s, i) {
+                result.push_str(&code);
+                i += len;
+                continue;
+            }
+        }
+
+        // Get the next grapheme cluster starting at byte position i
+        let remaining = &s[i..];
+        if let Some(grapheme) = remaining.graphemes(true).next() {
+            let gw = if grapheme == "\t" {
+                3
+            } else {
+                UnicodeWidthStr::width(grapheme)
+            };
+
+            if current_width + gw > content_budget {
+                break;
+            }
+            result.push_str(grapheme);
+            current_width += gw;
+            i += grapheme.len();
+        } else {
+            break;
+        }
+    }
+
+    // Append ellipsis if we actually truncated and there's room for it
+    if ellipsis_width <= max_width {
+        result.push_str(ellipsis);
     }
 
     result
@@ -265,5 +349,117 @@ mod tests {
     fn extract_ansi_code_bare_esc_returns_none() {
         // Just ESC at end of string
         assert_eq!(extract_ansi_code("\x1b", 0), None);
+    }
+
+    // ── visible_width ───────────────────────────────────────────────
+
+    #[test]
+    fn visible_width_ascii() {
+        assert_eq!(visible_width("hello"), 5);
+    }
+
+    #[test]
+    fn visible_width_empty() {
+        assert_eq!(visible_width(""), 0);
+    }
+
+    #[test]
+    fn visible_width_ignores_ansi() {
+        assert_eq!(visible_width("\x1b[31mhello\x1b[0m"), 5);
+    }
+
+    #[test]
+    fn visible_width_complex_ansi() {
+        assert_eq!(visible_width("\x1b[1;4;38;5;196mtext\x1b[0m"), 4);
+    }
+
+    #[test]
+    fn visible_width_wide_chars() {
+        assert_eq!(visible_width("你好"), 4);
+    }
+
+    #[test]
+    fn visible_width_mixed_wide_and_ascii() {
+        assert_eq!(visible_width("hi你好"), 6); // 2 + 4
+    }
+
+    #[test]
+    fn visible_width_tab_counts_as_3() {
+        assert_eq!(visible_width("\t"), 3);
+    }
+
+    #[test]
+    fn visible_width_tabs_in_text() {
+        assert_eq!(visible_width("a\tb"), 5); // 1 + 3 + 1
+    }
+
+    #[test]
+    fn visible_width_osc_hyperlink() {
+        let input = "\x1b]8;;https://example.com\x07click\x1b]8;;\x07";
+        assert_eq!(visible_width(input), 5);
+    }
+
+    // ── truncate_to_width ───────────────────────────────────────────
+
+    #[test]
+    fn truncate_no_truncation_needed() {
+        assert_eq!(truncate_to_width("hello", 10, "..."), "hello");
+    }
+
+    #[test]
+    fn truncate_basic() {
+        assert_eq!(truncate_to_width("hello world", 8, "..."), "hello...");
+    }
+
+    #[test]
+    fn truncate_exact_fit() {
+        assert_eq!(truncate_to_width("hello", 5, "..."), "hello");
+    }
+
+    #[test]
+    fn truncate_preserves_ansi() {
+        let input = "\x1b[31mhello world\x1b[0m";
+        let result = truncate_to_width(input, 8, "...");
+        // Should keep the color code, truncate visible text, add ellipsis
+        assert_eq!(result, "\x1b[31mhello...");
+        // Visible width should be 8
+        assert_eq!(visible_width(&result), 8);
+    }
+
+    #[test]
+    fn truncate_wide_chars() {
+        // "你好世界" = 8 columns, truncate to 6 with "..."
+        // budget = 6 - 3 = 3 columns, only "你" fits (2 cols), "好" would be 4
+        let result = truncate_to_width("你好世界", 6, "...");
+        assert_eq!(result, "你...");
+        assert_eq!(visible_width(&result), 5); // 2 + 3
+    }
+
+    #[test]
+    fn truncate_max_width_smaller_than_ellipsis() {
+        // max_width=2, ellipsis="..." (3 chars) — content budget saturates to 0
+        let result = truncate_to_width("hello", 2, "...");
+        // content_budget = 0, nothing fits, but ellipsis_width > max_width
+        // so no ellipsis either — empty result
+        assert_eq!(visible_width(&result), 0);
+    }
+
+    #[test]
+    fn truncate_empty_ellipsis() {
+        let result = truncate_to_width("hello world", 5, "");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn truncate_with_ansi_in_middle() {
+        let input = "he\x1b[31mllo world\x1b[0m";
+        let result = truncate_to_width(input, 8, "...");
+        assert_eq!(result, "he\x1b[31mllo...");
+        assert_eq!(visible_width(&result), 8);
+    }
+
+    #[test]
+    fn truncate_empty_string() {
+        assert_eq!(truncate_to_width("", 5, "..."), "");
     }
 }

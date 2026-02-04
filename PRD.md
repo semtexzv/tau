@@ -79,28 +79,28 @@ The event loop is async (tokio). The TUI is generic over a user event type `E`, 
 - [x] `cargo test` passes
 - [x] `cargo check` passes
 
-### US-004: Visible width calculation [ ]
+### US-004: Visible width calculation [x]
 
 **Description:** As a developer, I need `visible_width()` to measure how many terminal columns a string occupies, ignoring ANSI codes and correctly handling wide/emoji characters.
 
 **Acceptance Criteria:**
-- [ ] `visible_width(s: &str) -> usize` in `src/utils.rs`
+- [x] `visible_width(s: &str) -> usize` in `src/utils.rs`
   - Strips ANSI codes first
   - Uses `unicode_width::UnicodeWidthStr` for base measurement
   - Handles tabs as 3 spaces (matching pi-mono)
-- [ ] `truncate_to_width(s: &str, max_width: usize, ellipsis: &str) -> String`
+- [x] `truncate_to_width(s: &str, max_width: usize, ellipsis: &str) -> String`
   - Truncates to `max_width` visible columns, appending ellipsis if truncated
   - Preserves ANSI codes (they don't count toward width)
   - Grapheme-cluster-aware: doesn't split multi-byte characters
-- [ ] Tests:
+- [x] Tests:
   - ASCII: `visible_width("hello")` == 5
   - ANSI: `visible_width("\x1b[31mhello\x1b[0m")` == 5
   - Wide chars: `visible_width("你好")` == 4
   - Tabs: `visible_width("\t")` == 3
   - Truncation: `truncate_to_width("hello world", 8, "...")` == `"hello..."`
   - Truncation preserves ANSI: input with colors → output still has colors up to truncation point
-- [ ] `cargo test` passes
-- [ ] `cargo check` passes
+- [x] `cargo test` passes
+- [x] `cargo check` passes
 
 ### US-005: Component trait and Container [ ]
 

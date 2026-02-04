@@ -28,3 +28,15 @@
   - Event reading is NOT on the trait — crossterm's EventStream used directly by TUI run loop
 ## Task self-review PASSED
 ---
+
+## Iteration 3 - US-003: ANSI escape code utilities
+- What was done: Verified existing implementation of strip_ansi and extract_ansi_code in src/utils.rs. All acceptance criteria already met — functions correctly handle CSI, OSC, and APC sequences. 24 tests covering normal paths, edge cases (unterminated sequences, bare ESC, out of bounds), and Unicode. Marked PRD criteria complete and committed.
+- Files changed: PRD.md (acceptance criteria marked [x])
+- Learnings for future iterations:
+  - utils.rs already had full implementation from a prior session — always check existing code before writing new
+  - extract_ansi_code works on byte offsets, not char offsets — callers must pass byte positions
+  - OSC and APC share extract_string_sequence helper — both terminated by BEL or ST (ESC \)
+  - CSI parsing follows ECMA-48: param bytes (0x30-0x3F), intermediate bytes (0x20-0x2F), final byte (0x40-0x7E)
+  - strip_ansi delegates to extract_ansi_code for consistent parsing
+## Task self-review PASSED
+---
