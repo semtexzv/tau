@@ -645,6 +645,8 @@ idiomatic Rust async/await.
   the real test is in US-RT-003)
 
 ### GIT-PUSH: Push US-RT-001 through US-RT-002 [x]
+> **Note:** From this point forward, all work uses feature branches + PRs. See AGENTS.md.
+
 **Acceptance Criteria:**
 - [x] `git add -A && git commit -m "feat: tau-rt and tau-iface (US-RT-001, US-RT-002)"`
 - [x] `git push origin master`
@@ -695,10 +697,12 @@ executor, and timer heap.
   receives the result.
 - [ ] `run_test.sh` exits 0 on success, non-zero with clear error on failure
 
-### GIT-PUSH: Push US-RT-002b and US-RT-003 [ ]
+### CREATE-PR: PR for US-RT-002b and US-RT-003 [ ]
 **Acceptance Criteria:**
-- [ ] `git add -A && git commit -m "feat: vendored async crates + integration tests (US-RT-002b, US-RT-003)"`
-- [ ] `git push origin master`
+- [ ] Each story on its own feature branch with a PR (closes #3, #4)
+- [ ] PRs reference their GitHub issues
+- [ ] Move issues to **Review** on project board
+- [ ] Human merges after review
 
 ### US-RT-004: Dependency enforcement and forbidden-dep check [ ]
 
@@ -795,10 +799,12 @@ tau-iface so the TUI crate uses the shared runtime.
 - [ ] `cargo check -p tau-tui` passes
 - [ ] `ci/check-deps.sh` passes (no tokio in tree)
 
-### GIT-PUSH: Push US-RT-004 through US-RT-006 [ ]
+### CREATE-PR: PR for US-RT-004 through US-RT-006 [ ]
 **Acceptance Criteria:**
-- [ ] `git add -A && git commit -m "feat: dep enforcement, tau-http, TUI migration (US-RT-004, US-RT-005, US-RT-006)"`
-- [ ] `git push origin master`
+- [ ] Each story on its own feature branch with a PR (closes #5, #6, #7)
+- [ ] PRs reference their GitHub issues
+- [ ] Move issues to **Review** on project board
+- [ ] Human merges after review
 
 ### US-REVIEW-PHASE2B: Review tau-rt foundation (US-RT-001 through US-RT-006) [ ]
 
@@ -849,10 +855,12 @@ migration as a cohesive layer before building the AI and agent layers on top.
 - [ ] `cargo check --workspace` passes (except tau-rt which builds separately)
 - [ ] No tokio, reqwest, or forbidden deps in `[workspace.dependencies]`
 
-### GIT-PUSH: Push Phase 2b review and workspace restructure [ ]
+### CREATE-PR: PR for Phase 2b review and workspace restructure [ ]
 **Acceptance Criteria:**
-- [ ] `git add -A && git commit -m "chore: phase 2b review + workspace restructure (US-REVIEW-PHASE2B, US-017)"`
-- [ ] `git push origin master`
+- [ ] Each story on its own feature branch with a PR (closes #8, #9)
+- [ ] PRs reference their GitHub issues
+- [ ] Move issues to **Review** on project board
+- [ ] Human merges after review
 
 ### US-018: tau-ai core message types [ ]
 

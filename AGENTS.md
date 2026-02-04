@@ -1,9 +1,97 @@
 # AGENTS.md — Reusable Patterns for rtui
 
-## Git Workflow
-- **Push frequently.** After completing every 1–2 user stories (or any review task), commit and `git push`.
-- Don't let work accumulate locally — if tests pass and the task is done, push it.
-- Use descriptive commit messages: `feat:`, `fix:`, `chore:`, `docs:` prefixes.
+## Git Workflow (when `--git` flag is active)
+
+These instructions apply when the agent is running in git-aware mode.
+If git mode is not active, just commit locally and move on.
+
+### Before Starting Work
+
+1. **Check the project board** for available work:
+   ```bash
+   # List issues in Ready column
+   gh project item-list 2 --owner semtexzv --format json | \
+     python3 -c "import sys,json; items=json.load(sys.stdin)['items']; [print(f'#{i[\"content\"][\"number\"]} {i[\"content\"][\"title\"]} [{i[\"status\"]}]') for i in items if i.get('status')=='Ready']"
+   ```
+2. **Check for approved PRs** that need merging:
+   ```bash
+   gh pr list --state open --json number,title,reviewDecision --jq '.[] | select(.reviewDecision=="APPROVED") | "#\(.number) \(.title)"'
+   ```
+   If any PRs are approved → **merge them first** (see Merging below), then continue.
+
+3. **Check for PR review comments** on your open PRs:
+   ```bash
+   gh pr list --author @me --state open --json number,title,comments,reviews
+   ```
+   If a PR has requested changes → address the feedback, push to the branch, and re-request review.
+
+4. **Pull latest master:**
+   ```bash
+   git checkout master && git pull origin master
+   ```
+
+### Implementing a Task
+
+1. Pick the **first Ready issue** from the project board (respect dependency order)
+2. Create a feature branch:
+   ```bash
+   git checkout -b us-XXX-short-name   # e.g. us-rt-002-iface
+   ```
+3. Implement the task, commit with descriptive messages
+4. Rebase if master moved: `git rebase origin/master`
+5. Push and create PR:
+   ```bash
+   git push origin us-XXX-short-name
+   gh pr create --title "US-XXX: Title" --body "Closes #<issue-number>"
+   ```
+6. Move the issue to **Review** on the project board:
+   ```bash
+   # The PR's "Closes #N" auto-links it; move issue status:
+   gh project item-edit --project-id PVT_kwHOAD59Xc4BOTM_ \
+     --id <ITEM_ID> --field-id PVTSSF_lAHOAD59Xc4BOTM_zg9CvEo \
+     --single-select-option-id 8e9de16a
+   ```
+
+### Review Tasks (US-REVIEW-*)
+
+- Agent creates a PR with review findings (edits to progress.txt, any fix tasks in PRD.md)
+- The PR goes to **Review** — human must approve before it merges
+- Agent does NOT self-approve review tasks
+
+### Merging (Agent Merges After Human Approval)
+
+When a PR has been **approved** by a human reviewer:
+```bash
+# Check for approved PRs
+gh pr list --state open --json number,title,reviewDecision \
+  --jq '.[] | select(.reviewDecision=="APPROVED")'
+
+# Merge approved PR (squash into master)
+gh pr merge <number> --squash --delete-branch
+
+# Pull the merged changes
+git checkout master && git pull origin master
+```
+
+**Important:** Only merge PRs that have `reviewDecision: APPROVED`. Never merge unapproved PRs.
+
+After merging, check if dependent issues can be unblocked:
+```bash
+# Remove 'blocked' label from issues whose blockers are now Done
+gh issue edit <dependent-issue> --remove-label blocked
+```
+
+### Project Board Reference
+- **Project:** semtexzv/tau #2 ("tau development")
+- **Project ID:** `PVT_kwHOAD59Xc4BOTM_`
+- **Status field ID:** `PVTSSF_lAHOAD59Xc4BOTM_zg9CvEo`
+- **Column IDs:**
+  - Backlog: `940a9a83`
+  - Ready: `2e9e90a7`
+  - In Progress: `fdf80e03`
+  - Review: `8e9de16a`
+  - Done: `5db00838`
+- Issues have `Blocked by: #N` in body — don't start if blockers aren't Done
 
 ## Trait Object Downcasting
 - Terminal trait has `as_any(&self) -> &dyn Any` and `as_any_mut(&mut self) -> &mut dyn Any`
