@@ -664,33 +664,31 @@ when the host binary (which links `libtau_rt`) loads.
 - [x] `git add -A && git commit -m "feat: tau-rt and tau-iface (US-RT-001, US-RT-002)"`
 - [x] `git push origin master`
 
-### US-RT-002b: tau-mio — mio API frontend backed by tau-rt [ ]
+### US-RT-002b: Patch crossterm EventStream to use tau-iface [ ]
 
-**Description:** Create a `tau-mio` crate that implements `mio`'s public API (`Poll`,
-`Registry`, `Events`, `Token`, `Interest`, `event::Source`) but backed by tau-rt's
-reactor via tau-iface. This is **not a fork of mio** — it's a clean-room crate that
-matches mio's API surface so that consumers like crossterm can use it via
-`[patch.crates-io] mio = { path = "crates/tau-mio" }` without any source changes.
+**Description:** Patch vendored crossterm's `EventStream` to use `tau_iface::AsyncFd`
+on stdin instead of the current approach (blocking OS thread + mio sync polling).
 
-This approach avoids patching crossterm internals entirely — crossterm already depends
-on mio, we just swap what mio resolves to. May require extending the tau-rt/tau-iface
-C ABI if mio's API needs primitives not yet exposed (e.g. interest modification,
-edge-triggered mode). Any new functions must be added to both tau-rt and tau-iface.
+Currently crossterm's `EventStream` spawns a dedicated thread that blocks on
+`mio::Poll::poll()`, then calls `stream_waker.wake()` when data arrives. This is
+runtime-agnostic but wastes a thread. The patch replaces this with `AsyncFd` on
+stdin fd — the tau-rt reactor polls stdin directly, no extra thread needed.
+
+The sync mio-based `poll_internal` / `read_internal` path (used by the blocking
+`crossterm::event::read()` API) can stay as-is — mio works fine for sync polling.
+Only the `event-stream` async path needs patching.
 
 **Acceptance Criteria:**
-- [ ] `crates/tau-mio/Cargo.toml` with `name = "mio"` (so it patches the real mio)
-- [ ] Implements mio's core API surface:
-  - `Poll::new()`, `poll(&mut self, events, timeout)`
-  - `Registry::register()`, `reregister()`, `deregister()`
-  - `Events` iterator
-  - `Token`, `Interest` (READABLE, WRITABLE)
-  - `event::Source` trait
-- [ ] Backed by tau-iface: `Poll::poll()` calls `tau_iface::react()`, IO registration
-  delegates to `tau_rt_io_register`/`tau_rt_io_poll_*`
-- [ ] If new runtime primitives needed: add `#[no_mangle]` to tau-rt + externs to tau-iface
-- [ ] Workspace `[patch.crates-io]` maps `mio` to `crates/tau-mio`
-- [ ] `cargo check --workspace` passes (crossterm resolves to tau-mio transparently)
+- [ ] Vendored crossterm at `vendor/crossterm` (already added as submodule)
+- [ ] Patch `src/event/stream.rs`: replace blocking thread + mio waker approach with
+  `tau_iface::AsyncFd` wrapping stdin fd. `poll_next()` awaits readable on the AsyncFd,
+  then calls `read_internal()` when data is available.
+- [ ] Remove `mio` and `signal-hook-mio` as dependencies of the `event-stream` feature
+  (they remain for the sync `events` feature)
+- [ ] Workspace `[patch.crates-io]` maps crossterm to vendored path
+- [ ] Add `tau-iface` as a dependency of vendored crossterm (behind `event-stream` feature)
 - [ ] `crossterm::event::EventStream` works with tau-rt reactor
+- [ ] `cargo check --workspace` passes
 - [ ] All existing tau-tui tests still pass
 
 ### US-RT-003: Integration test — host and plugin share reactor [ ]
