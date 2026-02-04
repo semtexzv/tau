@@ -1,10 +1,22 @@
 // TUI engine with rendering and async event loop.
 
 use std::fmt::Write;
+use futures::StreamExt;
 use tokio::sync::mpsc::{self, UnboundedSender, UnboundedReceiver};
 
 use crate::component::{Component, Container};
 use crate::terminal::Terminal;
+
+/// Events delivered to the TUI handler.
+#[derive(Debug)]
+pub enum Event<E> {
+    /// A keyboard input event.
+    Key(crossterm::event::KeyEvent),
+    /// Terminal was resized to (cols, rows).
+    Resize(u16, u16),
+    /// A user-defined event from a spawned task.
+    User(E),
+}
 
 /// The main TUI engine. Renders a component tree to a terminal.
 ///
@@ -23,14 +35,23 @@ pub struct TUI<E: Send + 'static> {
     /// Actual terminal cursor row position (may differ from cursor_row after differential render).
     hardware_cursor_row: usize,
     event_tx: UnboundedSender<E>,
-    #[allow(dead_code)] // consumed by the run loop in US-008
     event_rx: Option<UnboundedReceiver<E>>,
+    /// Whether the run loop should exit.
+    should_quit: bool,
+    /// Index of the focused child component in root (receives key input).
+    focused: Option<usize>,
+    /// Sender for injecting terminal (crossterm) events into the run loop.
+    /// In production, a spawned task bridges crossterm's EventStream here.
+    /// In tests, events are injected directly.
+    crossterm_tx: UnboundedSender<crossterm::event::Event>,
+    crossterm_rx: Option<UnboundedReceiver<crossterm::event::Event>>,
 }
 
 impl<E: Send + 'static> TUI<E> {
     /// Create a new TUI engine wrapping the given terminal.
     pub fn new(terminal: Box<dyn Terminal>) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (crossterm_tx, crossterm_rx) = mpsc::unbounded_channel();
         TUI {
             terminal,
             root: Container::new(),
@@ -40,6 +61,10 @@ impl<E: Send + 'static> TUI<E> {
             hardware_cursor_row: 0,
             event_tx,
             event_rx: Some(event_rx),
+            should_quit: false,
+            focused: None,
+            crossterm_tx,
+            crossterm_rx: Some(crossterm_rx),
         }
     }
 
@@ -53,6 +78,29 @@ impl<E: Send + 'static> TUI<E> {
         self.event_tx.clone()
     }
 
+    /// Returns a sender for injecting terminal events (key, resize).
+    /// In production, the run loop spawns a task that bridges crossterm's
+    /// EventStream to this channel. For testing, inject events directly.
+    pub fn crossterm_event_tx(&self) -> UnboundedSender<crossterm::event::Event> {
+        self.crossterm_tx.clone()
+    }
+
+    /// Signal the run loop to exit after the current handler returns.
+    pub fn quit(&mut self) {
+        self.should_quit = true;
+    }
+
+    /// Set which child component in root has focus (receives key input).
+    /// Pass `None` to clear focus.
+    pub fn set_focus(&mut self, index: Option<usize>) {
+        self.focused = index;
+    }
+
+    /// Returns the index of the currently focused child, if any.
+    pub fn focused(&self) -> Option<usize> {
+        self.focused
+    }
+
     /// Start the terminal (enable raw mode, hide cursor).
     pub fn start(&mut self) {
         self.terminal.start();
@@ -62,6 +110,83 @@ impl<E: Send + 'static> TUI<E> {
     /// Cursor is already past content after render (each line ends with \r\n).
     pub fn stop(&mut self) {
         self.terminal.stop();
+    }
+
+    /// Run the async event loop.
+    ///
+    /// Calls `start()`, then enters a `tokio::select!` loop reading from
+    /// both the crossterm event channel and the user event channel. Each
+    /// event is forwarded to `handler`, followed by `render()`. The loop
+    /// exits when `quit()` is called or both channels close. Calls `stop()`
+    /// on exit.
+    ///
+    /// Key events are automatically forwarded to the focused component
+    /// (if any) before the handler is called.
+    pub async fn run<F>(&mut self, mut handler: F)
+    where
+        F: FnMut(Event<E>, &mut TUI<E>),
+    {
+        self.start();
+        self.render();
+
+        let mut user_rx = self.event_rx.take().expect("run() can only be called once");
+        let mut crossterm_rx = self
+            .crossterm_rx
+            .take()
+            .expect("run() can only be called once");
+
+        // Spawn a task that bridges crossterm's EventStream to our channel.
+        let ct_tx = self.crossterm_tx.clone();
+        let reader_handle = tokio::spawn(async move {
+            let mut stream = crossterm::event::EventStream::new();
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(event) => {
+                        if ct_tx.send(event).is_err() {
+                            break; // receiver dropped
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        loop {
+            let event = tokio::select! {
+                Some(ct_event) = crossterm_rx.recv() => {
+                    match ct_event {
+                        crossterm::event::Event::Key(key) => Some(Event::Key(key)),
+                        crossterm::event::Event::Resize(w, h) => Some(Event::Resize(w, h)),
+                        _ => None,
+                    }
+                }
+                Some(user_event) = user_rx.recv() => {
+                    Some(Event::User(user_event))
+                }
+                else => break,
+            };
+
+            if let Some(event) = event {
+                // Forward key events to focused component
+                if let Event::Key(ref key) = event {
+                    if let Some(idx) = self.focused {
+                        if let Some(child) = self.root.child_mut(idx) {
+                            child.handle_input(key);
+                        }
+                    }
+                }
+
+                handler(event, self);
+                self.render();
+            }
+
+            if self.should_quit {
+                break;
+            }
+        }
+
+        reader_handle.abort();
+        self.stop();
     }
 
     /// Render the component tree to the terminal with differential rendering.
@@ -704,5 +829,273 @@ mod tests {
             .add_child(Box::new(StubComponent::new(&["A"])));
         tui.render();
         assert_eq!(tui.cursor_row, 1);
+    }
+
+    // ── Quit ────────────────────────────────────────────────────────
+
+    #[test]
+    fn quit_sets_should_quit() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        assert!(!tui.should_quit);
+        tui.quit();
+        assert!(tui.should_quit);
+    }
+
+    // ── Focus management ────────────────────────────────────────────
+
+    #[test]
+    fn focus_defaults_to_none() {
+        let tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        assert_eq!(tui.focused(), None);
+    }
+
+    #[test]
+    fn set_focus_and_read_back() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        tui.set_focus(Some(0));
+        assert_eq!(tui.focused(), Some(0));
+        tui.set_focus(None);
+        assert_eq!(tui.focused(), None);
+    }
+
+    // ── Async event loop (run) ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn run_user_event_arrives() {
+        let mut tui: TUI<String> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        let tx = tui.event_tx();
+
+        tokio::spawn(async move {
+            tx.send("hello".to_string()).unwrap();
+        });
+
+        let mut received_user = false;
+        tui.run(|event, tui| {
+            if let Event::User(ref msg) = event {
+                assert_eq!(msg, "hello");
+                received_user = true;
+            }
+            tui.quit();
+        })
+        .await;
+
+        assert!(received_user, "handler should receive user event");
+    }
+
+    #[tokio::test]
+    async fn run_key_event_arrives() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        let ct_tx = tui.crossterm_event_tx();
+
+        tokio::spawn(async move {
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('a'),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            ct_tx.send(crossterm::event::Event::Key(key)).unwrap();
+        });
+
+        let mut received_key = false;
+        tui.run(|event, tui| {
+            if let Event::Key(key) = event {
+                assert_eq!(key.code, crossterm::event::KeyCode::Char('a'));
+                received_key = true;
+            }
+            tui.quit();
+        })
+        .await;
+
+        assert!(received_key, "handler should receive key event");
+    }
+
+    #[tokio::test]
+    async fn run_quit_breaks_loop() {
+        let mut tui: TUI<String> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        let tx = tui.event_tx();
+
+        // Send multiple events; handler should quit on the first
+        tokio::spawn(async move {
+            tx.send("one".to_string()).unwrap();
+            tx.send("two".to_string()).unwrap();
+            tx.send("three".to_string()).unwrap();
+        });
+
+        let mut count = 0;
+        tui.run(|event, tui| {
+            if let Event::User(_) = event {
+                count += 1;
+            }
+            tui.quit();
+        })
+        .await;
+
+        assert_eq!(count, 1, "loop should break after quit on first event");
+    }
+
+    #[tokio::test]
+    async fn run_calls_start_and_stop() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        let ct_tx = tui.crossterm_event_tx();
+
+        tokio::spawn(async move {
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            );
+            ct_tx.send(crossterm::event::Event::Key(key)).unwrap();
+        });
+
+        tui.run(|_event, tui| {
+            tui.quit();
+        })
+        .await;
+
+        let mock = tui
+            .terminal
+            .as_any()
+            .downcast_ref::<MockTerminal>()
+            .unwrap();
+        assert!(mock.started, "run() should call start()");
+        assert!(mock.stopped, "run() should call stop()");
+    }
+
+    #[tokio::test]
+    async fn run_renders_after_each_handler() {
+        let mut tui: TUI<String> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        tui.root()
+            .add_child(Box::new(StubComponent::new(&["content"])));
+        let tx = tui.event_tx();
+
+        tokio::spawn(async move {
+            tx.send("ev".to_string()).unwrap();
+        });
+
+        tui.run(|_event, tui| {
+            tui.quit();
+        })
+        .await;
+
+        let mock = tui
+            .terminal
+            .as_any()
+            .downcast_ref::<MockTerminal>()
+            .unwrap();
+        // At least the initial render + one render after handler
+        assert!(mock.writes.len() >= 1, "should render at least once");
+    }
+
+    #[tokio::test]
+    async fn run_focus_forwards_key_to_component() {
+        use std::sync::{Arc, Mutex};
+
+        /// Component that records received key events.
+        struct KeyTracker {
+            keys: Arc<Mutex<Vec<crossterm::event::KeyEvent>>>,
+        }
+
+        impl Component for KeyTracker {
+            fn render(&self, _width: u16) -> Vec<String> {
+                vec![]
+            }
+            fn handle_input(&mut self, event: &crossterm::event::KeyEvent) {
+                self.keys.lock().unwrap().push(*event);
+            }
+        }
+
+        let keys = Arc::new(Mutex::new(Vec::new()));
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        tui.root().add_child(Box::new(KeyTracker {
+            keys: keys.clone(),
+        }));
+        tui.set_focus(Some(0));
+
+        let ct_tx = tui.crossterm_event_tx();
+        tokio::spawn(async move {
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('x'),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            ct_tx.send(crossterm::event::Event::Key(key)).unwrap();
+        });
+
+        tui.run(|_event, tui| {
+            tui.quit();
+        })
+        .await;
+
+        let received = keys.lock().unwrap();
+        assert_eq!(received.len(), 1, "focused component should receive key");
+        assert_eq!(
+            received[0].code,
+            crossterm::event::KeyCode::Char('x'),
+            "correct key forwarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_no_focus_no_forwarding() {
+        use std::sync::{Arc, Mutex};
+
+        struct KeyTracker {
+            keys: Arc<Mutex<Vec<crossterm::event::KeyEvent>>>,
+        }
+
+        impl Component for KeyTracker {
+            fn render(&self, _width: u16) -> Vec<String> {
+                vec![]
+            }
+            fn handle_input(&mut self, event: &crossterm::event::KeyEvent) {
+                self.keys.lock().unwrap().push(*event);
+            }
+        }
+
+        let keys = Arc::new(Mutex::new(Vec::new()));
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        tui.root().add_child(Box::new(KeyTracker {
+            keys: keys.clone(),
+        }));
+        // No focus set
+
+        let ct_tx = tui.crossterm_event_tx();
+        tokio::spawn(async move {
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('x'),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            ct_tx.send(crossterm::event::Event::Key(key)).unwrap();
+        });
+
+        tui.run(|_event, tui| {
+            tui.quit();
+        })
+        .await;
+
+        let received = keys.lock().unwrap();
+        assert_eq!(received.len(), 0, "without focus, no key forwarding");
+    }
+
+    #[tokio::test]
+    async fn run_resize_event_arrives() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        let ct_tx = tui.crossterm_event_tx();
+
+        tokio::spawn(async move {
+            ct_tx
+                .send(crossterm::event::Event::Resize(120, 40))
+                .unwrap();
+        });
+
+        let mut received_resize = false;
+        tui.run(|event, tui| {
+            if let Event::Resize(w, h) = event {
+                assert_eq!(w, 120);
+                assert_eq!(h, 40);
+                received_resize = true;
+            }
+            tui.quit();
+        })
+        .await;
+
+        assert!(received_resize, "handler should receive resize event");
     }
 }

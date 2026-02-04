@@ -77,3 +77,18 @@
   - MockTerminal.writes has exactly 1 entry per render() call — verified by tests
 ## Task self-review PASSED
 ---
+
+## Iteration 7 - US-007: Differential rendering
+- What was done: Rewrote TUI::render() to support differential rendering. Three render paths: first render (previous_width==0, writes all lines without clearing), width changed (clear screen + full redraw), differential (compare previous_lines vs new, only rewrite changed lines). Added `cursor_row` and `hardware_cursor_row` fields to TUI struct. When no changes detected, no output is written at all. Content shrink handled by clearing old lines with `\x1b[2K\r\n` and cursor-up to return. Updated 2 existing tests and added 13 new differential rendering tests. All 95 tests pass.
+- Files changed: crates/tau-tui/src/tui.rs, PRD.md, AGENTS.md
+- Learnings for future iterations:
+  - `previous_width == 0` serves as "never rendered" sentinel — no separate flag needed
+  - `hardware_cursor_row` is critical for cursor math — after a partial update it may differ from `cursor_row`
+  - Unified loop from `first_changed..=last_changed` handles grow/shrink/change naturally — no separate steps
+  - `\x1b[2K` clears entire line but doesn't move cursor — `\r` before content ensures column 0
+  - `\x1b[nA`/`\x1b[nB` with n=0 is treated as n=1 by terminals — only emit when diff > 0
+  - Empty first render produces no output (not even sync markers) — cleaner than US-006's approach
+  - `use std::fmt::Write` enables `write!(buffer, ...)` for formatting into String efficiently
+  - Project is now a workspace: TUI code in crates/tau-tui/, tests via `cargo test -p tau-tui`
+## Task self-review PASSED
+---

@@ -57,6 +57,11 @@ impl Container {
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
     }
+
+    /// Get a mutable reference to the child at the given index.
+    pub fn child_mut(&mut self, index: usize) -> Option<&mut Box<dyn Component>> {
+        self.children.get_mut(index)
+    }
 }
 
 impl Default for Container {
@@ -207,5 +212,31 @@ mod tests {
     fn component_trait_is_object_safe() {
         // Verify we can use Box<dyn Component>
         let _boxed: Box<dyn Component> = Box::new(MockComponent::new(vec!["test"]));
+    }
+
+    #[test]
+    fn container_child_mut_valid_index() {
+        let mut container = Container::new();
+        container.add_child(Box::new(MockComponent::new(vec!["a"])));
+        container.add_child(Box::new(MockComponent::new(vec!["b"])));
+        assert!(container.child_mut(0).is_some());
+        assert!(container.child_mut(1).is_some());
+    }
+
+    #[test]
+    fn container_child_mut_out_of_bounds() {
+        let mut container = Container::new();
+        container.add_child(Box::new(MockComponent::new(vec!["a"])));
+        assert!(container.child_mut(5).is_none());
+    }
+
+    #[test]
+    fn container_child_mut_can_call_methods() {
+        let mut container = Container::new();
+        container.add_child(Box::new(MockComponent::new(vec!["hello"])));
+        let child = container.child_mut(0).unwrap();
+        // Can call Component methods through Box deref
+        let lines = child.render(80);
+        assert_eq!(lines, vec!["hello"]);
     }
 }

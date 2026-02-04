@@ -239,12 +239,12 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - [x] `cargo test` passes
 - [x] `cargo check` passes
 
-### US-008: Async event loop with user events [ ]
+### US-008: Async event loop with user events [x]
 
 **Description:** As a developer, I need an async event loop that handles terminal input, resize, AND user-defined events from spawned tasks.
 
 **Acceptance Criteria:**
-- [ ] `Event<E>` enum in `src/tui.rs`:
+- [x] `Event<E>` enum in `src/tui.rs`:
   ```rust
   pub enum Event<E> {
       Key(crossterm::event::KeyEvent),
@@ -252,10 +252,10 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
       User(E),
   }
   ```
-- [ ] `TUI<E>` has an `tokio::sync::mpsc::unbounded_channel` internally:
+- [x] `TUI<E>` has an `tokio::sync::mpsc::unbounded_channel` internally:
   - `event_tx()` returns `UnboundedSender<E>` — users clone this and send from `tokio::spawn`ed tasks
   - The receiver is consumed by the run loop
-- [ ] `TUI::run<F>(&mut self, handler: F)` where `F: FnMut(Event<E>, &mut TUI<E>)`:
+- [x] `TUI::run<F>(&mut self, handler: F)` where `F: FnMut(Event<E>, &mut TUI<E>)`:
   - Calls `self.start()`
   - Uses `crossterm::event::EventStream` (from `event-stream` feature) for async terminal events
   - `tokio::select!` on:
@@ -265,16 +265,16 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
   - Calls `self.render()` after each handler invocation
   - Breaks when `self.should_quit` is true
   - Calls `self.stop()` on exit
-- [ ] `TUI::quit(&mut self)` — sets `should_quit = true`
-- [ ] Focus management: `set_focus()` and `handle_key()` forward to focused component (from previous US-008, now integrated here)
+- [x] `TUI::quit(&mut self)` — sets `should_quit = true`
+- [x] Focus management: `set_focus()` and `handle_key()` forward to focused component (from previous US-008, now integrated here)
   - `set_focus(component)` — tracks focused component
   - When a `Key` event arrives and there's a focused component, forwards via `handle_input()`
-- [ ] Tests:
+- [x] Tests:
   - User event arrives via channel → handler receives `Event::User(...)`
   - Key event → handler receives `Event::Key(...)`
   - `quit()` breaks the loop
-- [ ] `cargo test` passes
-- [ ] `cargo check` passes
+- [x] `cargo test` passes
+- [x] `cargo check` passes
 
 ### US-REVIEW-PHASE1: Review foundation (US-001 through US-008) [ ]
 
@@ -1007,108 +1007,149 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 
 ---
 
-## Phase 6: Source-based extensions
+## Phase 6: Source-based extensions (IPC)
 
-Pi-mono loads TypeScript extensions via `jiti` (JIT TS compiler). For tau, we do the equivalent in Rust:
+Extensions are Rust source files compiled to **binaries** and spawned as **child processes**. Communication is JSON-RPC over stdin/stdout. Extensions are fully async — they have their own tokio runtime and can do network IO, spawn tasks, etc. without blocking tau. An extension crash cannot crash tau.
 
-1. Extension is a `.rs` file (or small Cargo project with `Cargo.toml`)
-2. tau discovers extension sources from `~/.tau/extensions/` and `<cwd>/.tau/extensions/`
-3. tau compiles them to `cdylib` via `rustc` (single file) or `cargo build` (Cargo project)
-4. tau loads the resulting `.so`/`.dylib` via `libloading`
-5. Extension exports `#[no_mangle] pub extern "C" fn tau_extension(api: *mut TauExtApi)` 
-6. Reload = recompile + `dlclose` + `dlopen`
-
-The extension API crosses a C ABI boundary (`extern "C"` + `#[repr(C)]` vtable struct) so extensions work regardless of compiler version. A `tau-ext` crate wraps this in ergonomic Rust:
-
-```rust
-// ~/.tau/extensions/my_tool.rs
-use tau_ext::prelude::*;
-
-tau_extension!(|api| {
-    api.register_tool(ToolDef {
-        name: "my_tool",
-        description: "Does something custom",
-        parameters: json_schema!(MyParams),
-        execute: |params, _ctx| {
-            let p: MyParams = serde_json::from_value(params)?;
-            Ok(ToolResult::text(format!("result: {}", p.input)))
-        },
-    });
-
-    api.on("tool_result", |event, _ctx| {
-        // observe tool results
-    });
-});
-
-#[derive(Deserialize, JsonSchema)]
-struct MyParams { input: String }
+```
+tau (parent)                          extension (child process)
+    │                                       │
+    │──── stdin ──→ {"method":"init",...}    │
+    │                                       │
+    │  {"method":"register_tool",...}  ←──── stdout
+    │  {"method":"on_event",...}       ←────│
+    │                                       │
+    │──── {"method":"execute_tool",...} ──→  │
+    │                                       │ (can await, do HTTP, etc.)
+    │  {"method":"tool_result",...}    ←────│
+    │                                       │
+    │──── {"method":"event",...}       ──→  │
+    │  {"method":"event_response",...} ←────│
+    │                                       │
+    │──── {"method":"shutdown"}        ──→  │
+    │                                   [exits]
 ```
 
-### US-032: tau-ext crate with C ABI extension interface [ ]
+**Developer experience — write a `.rs` file, tau compiles and spawns it:**
 
-**Description:** As an extension author, I need a stable C ABI interface and an ergonomic Rust wrapper so I can write `.rs` extensions that tau loads at runtime.
+```rust
+// ~/.tau/extensions/web_search.rs
+use tau_ext::prelude::*;
+
+#[tau_ext::main]
+async fn setup(api: &mut ExtensionApi) {
+    api.register_tool(ToolDef {
+        name: "web_search",
+        description: "Search the web",
+        parameters: json_schema!(SearchParams),
+    });
+
+    api.on_tool_execute("web_search", |params: SearchParams| async move {
+        // Fully async! Own tokio runtime in this process.
+        let resp = reqwest::get(format!("https://api.search.com/?q={}", params.query))
+            .await?;
+        Ok(ToolResult::text(resp.text().await?))
+    });
+
+    api.on_event("tool_result", |event| async move {
+        // Observe any tool result
+        log!("Tool {} finished", event.tool_name);
+        Ok(())
+    });
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct SearchParams { query: String }
+```
+
+### US-032: IPC protocol and tau-ext crate [ ]
+
+**Description:** As an extension author, I need an IPC protocol and ergonomic Rust crate so I can write async extensions that tau spawns as child processes.
 
 **Acceptance Criteria:**
 - [ ] New crate: `crates/tau-ext/`
-- [ ] `crates/tau-ext/src/abi.rs` — the C ABI contract:
+- [ ] `crates/tau-ext/src/protocol.rs` — JSON-RPC-like protocol types:
   ```rust
-  /// Stable C ABI vtable passed to extensions.
-  /// tau populates this with function pointers.
-  /// Extensions call these to register tools, subscribe to events, etc.
-  #[repr(C)]
-  pub struct TauExtApi {
-      pub ctx: *mut c_void,
-      pub register_tool: extern "C" fn(ctx: *mut c_void, def_json: *const c_char),
-      pub on_event: extern "C" fn(ctx: *mut c_void, event_name: *const c_char, handler_id: u64),
-      pub log: extern "C" fn(ctx: *mut c_void, msg: *const c_char),
-      // ... kept minimal for v1
+  /// Messages from tau → extension (via stdin)
+  #[derive(Serialize, Deserialize)]
+  #[serde(tag = "method")]
+  pub enum HostMessage {
+      Init { ext_id: String },
+      ExecuteTool { request_id: String, tool_name: String, params: Value },
+      Event { event_name: String, data: Value },
+      Shutdown,
+  }
+  
+  /// Messages from extension → tau (via stdout)
+  #[derive(Serialize, Deserialize)]
+  #[serde(tag = "method")]
+  pub enum ExtMessage {
+      RegisterTool { def: ToolDefJson },
+      SubscribeEvent { event_name: String },
+      ToolResult { request_id: String, result: ToolResultJson },
+      EventResponse { event_name: String, response: Option<Value> },
+      Log { level: String, message: String },
+      Ready,
   }
   ```
-  All data crosses the boundary as JSON strings (`*const c_char`) — simple, stable, debuggable.
-- [ ] `crates/tau-ext/src/lib.rs` — ergonomic Rust wrapper:
-  - `ExtensionApi` struct wrapping `TauExtApi` with safe Rust methods:
-    - `register_tool(def: ToolDef)` — serializes to JSON, calls C fn
-    - `on(event: &str, handler: F)` — stores closure, passes handler_id to C fn
-    - `log(msg: &str)`
-  - `ToolDef` struct: `name`, `description`, `parameters` (serde_json::Value), `execute` callback
-  - `tau_extension!` proc-macro-free helper macro that generates the `#[no_mangle] extern "C"` entry point
-- [ ] Re-exports: `serde`, `serde_json`, `schemars` for extension authors
-- [ ] Tests: `TauExtApi` is `#[repr(C)]` and FFI-safe (compile test)
+  One JSON object per line (newline-delimited JSON). Simple, streamable, debuggable.
+- [ ] `ToolDefJson` struct: `name: String`, `description: String`, `parameters: Value` (JSON Schema)
+- [ ] `ToolResultJson` struct: `content: Vec<ContentBlock>`, `is_error: bool`
+- [ ] `crates/tau-ext/src/lib.rs` — ergonomic async wrapper:
+  - `ExtensionApi` struct that reads `HostMessage` from stdin and writes `ExtMessage` to stdout
+  - `register_tool(def: ToolDef)` — sends `RegisterTool` message
+  - `on_tool_execute(name, handler)` — registers async handler, dispatches when `ExecuteTool` arrives
+  - `on_event(name, handler)` — sends `SubscribeEvent`, dispatches when `Event` arrives
+  - `log!(...)` macro — sends `Log` message (stderr is also captured by tau for crash diagnostics)
+  - `#[tau_ext::main]` attribute macro: generates `#[tokio::main] async fn main()` + stdin/stdout message loop
+- [ ] Dependencies: `tokio`, `serde`, `serde_json`, `schemars`
+- [ ] Re-exports for extension authors: `serde`, `serde_json`, `schemars`, `tokio`
+- [ ] Tests:
+  - Protocol types round-trip through serde
+  - `ExtensionApi` reads mock stdin messages, dispatches to handlers
+  - `ExtensionApi` writes correctly formatted NDJSON to stdout
+- [ ] `cargo test -p tau-ext` passes
 - [ ] `cargo check --workspace` passes
 
-### US-033: Extension compiler and loader [ ]
+### US-033: Extension compiler and spawner [ ]
 
-**Description:** As a developer, I need tau to discover, compile, and load `.rs` extension files at startup.
+**Description:** As a developer, I need tau to compile `.rs` extensions to binaries and spawn them as child processes.
 
 **Acceptance Criteria:**
 - [ ] `crates/tau-cli/src/extensions/compiler.rs`:
-  - `compile_single_file(path: &Path) -> Result<PathBuf>`:
-    - Runs `rustc --crate-type=cdylib --edition=2021 -o <cache>/ext_name.so -L <tau_libs> --extern tau_ext=<tau_ext.rlib> <path>`
-    - Caches compiled `.so` in `~/.tau/cache/extensions/`
-    - Recompiles only if source `.rs` is newer than cached `.so` (mtime check)
-    - Returns path to compiled `.so`
-  - `compile_cargo_project(dir: &Path) -> Result<PathBuf>`:
-    - Detects `Cargo.toml` in directory
-    - Runs `cargo build --release --lib` in extension dir
-    - Returns path to built cdylib from `target/release/`
-- [ ] `crates/tau-cli/src/extensions/loader.rs`:
-  - `load_extension(so_path: &Path) -> Result<LoadedExtension>`:
-    - Uses `libloading::Library::new()` to load `.so`
-    - Looks up `tau_extension` symbol
-    - Creates `TauExtApi` vtable with function pointers back into tau
-    - Calls the extension's entry point with `&mut TauExtApi`
-    - Collects registered tools, event handlers into `LoadedExtension`
-  - `LoadedExtension` struct: tools, event handlers, library handle (keeps `.so` alive)
+  - `compile_extension(source: &ExtensionSource) -> Result<PathBuf>`:
+    - **Single `.rs` file**: generates a temporary `Cargo.toml` in `~/.tau/cache/extensions/<name>/` that depends on `tau-ext`, copies/symlinks the `.rs` as `src/main.rs`, runs `cargo build --release`
+    - **Cargo project** (dir with `Cargo.toml`): runs `cargo build --release` in the extension dir
+    - Returns path to compiled binary
+  - Caching: skips recompile if binary is newer than all source files (mtime check on `.rs` + `Cargo.toml`)
+  - Compilation runs as async `tokio::process::Command` — doesn't block the event loop
+  - On compile error: captures stderr, returns `Err` with compiler output
+- [ ] `crates/tau-cli/src/extensions/spawner.rs`:
+  - `spawn_extension(binary: &Path) -> Result<SpawnedExtension>`:
+    - Spawns binary as child process with piped stdin/stdout/stderr
+    - Sends `Init { ext_id }` message
+    - Reads messages until `Ready` received — collects `RegisterTool` and `SubscribeEvent` during init
+    - Returns `SpawnedExtension` with:
+      - `child: tokio::process::Child`
+      - `stdin: ChildStdin` (for sending messages)
+      - `stdout_reader: BufReader<ChildStdout>` (for reading responses)
+      - `tools: Vec<ToolDefJson>` (registered during init)
+      - `subscribed_events: HashSet<String>`
+  - `SpawnedExtension::send(msg: &HostMessage)` — serialize + write to stdin
+  - `SpawnedExtension::recv() -> Option<ExtMessage>` — read one NDJSON line from stdout
+  - `SpawnedExtension::kill()` — sends `Shutdown`, waits briefly, then kills
 - [ ] Tests:
-  - Compile a test `.rs` extension file → produces `.so`
-  - Load the `.so` → extension's `register_tool` was called
-  - Mtime cache: second compile is skipped when source unchanged
+  - Compile a test extension → binary exists
+  - Spawn extension → receives `Ready` + tool registrations
+  - Send `ExecuteTool` → receive `ToolResult`
+  - Send `Shutdown` → process exits
+  - Compile cache: second run skips compilation
 - [ ] `cargo test -p tau-cli` passes
 - [ ] `cargo check --workspace` passes
 
-### US-034: Extension discovery and lifecycle [ ]
+### US-034: Extension manager with discovery and reload [ ]
 
-**Description:** As a developer, I need tau to discover extensions from standard directories and support reload.
+**Description:** As a developer, I need tau to discover extensions, manage their lifecycle, and support hot reload.
 
 **Acceptance Criteria:**
 - [ ] `crates/tau-cli/src/extensions/discovery.rs`:
@@ -1118,71 +1159,84 @@ struct MyParams { input: String }
     - For each entry:
       - `.rs` file → `ExtensionSource::SingleFile(path)`
       - Directory with `Cargo.toml` → `ExtensionSource::CargoProject(path)`
-      - Directory with `lib.rs` or `mod.rs` → single-file compile of that file
     - Deduplicates by resolved path
-  - `ExtensionSource` enum: `SingleFile(PathBuf)` | `CargoProject(PathBuf)`
+  - `ExtensionSource` enum: `SingleFile(PathBuf) | CargoProject(PathBuf)`
 - [ ] `crates/tau-cli/src/extensions/manager.rs`:
   - `ExtensionManager` struct:
-    - `load_all(&mut self, cwd: &Path)` — discover + compile + load all
-    - `reload(&mut self, cwd: &Path)` — unload all (drop `Library` handles) + load_all
-    - `get_tools() -> Vec<&AgentTool>` — all tools from all extensions
-    - `fire_event(event: &str, data: &serde_json::Value)` — call all handlers for event
-  - Reload triggered by a keyboard shortcut (Ctrl+Shift+R) or `/reload` command
+    - `load_all(&mut self, cwd: &Path)` — discover → compile all (parallel) → spawn all → collect tools + subscriptions
+    - `reload(&mut self, cwd: &Path)` — shutdown all → load_all. Shows compile progress/errors in TUI.
+    - `shutdown_all(&mut self)` — sends Shutdown to all, waits, kills stragglers
+    - `get_tools() -> &[ExtensionTool]` — all tools from all extensions
+    - `execute_tool(&mut self, name, params) -> impl Future<Output=ToolResult>` — routes to correct extension process, sends `ExecuteTool`, awaits `ToolResult`. Runs as spawned task, posts result via `event_tx`.
+    - `fire_event(&mut self, name, data)` — sends `Event` to all subscribed extensions (fan-out), collects responses
+  - Handles extension crashes: if child process exits unexpectedly, logs error and removes its tools
+  - Reload triggered by `/reload` command or Ctrl+Shift+R
+- [ ] `ExtensionTool` implements `AgentTool`:
+  - `def()` returns the tool definition from the extension
+  - `execute()` delegates to `ExtensionManager::execute_tool()` via channel
 - [ ] Integration with tau-cli:
-  - On startup: `ExtensionManager::load_all()`
-  - Extension tools added to agent's tool set alongside built-in tools
-  - Extension event handlers called at appropriate lifecycle points (tool_call, tool_result, agent_start, agent_end)
+  - On startup: `ExtensionManager::load_all()` (show progress: "Compiling extensions...")
+  - Extension tools merged with built-in tools in agent's tool set
+  - Agent event handlers fire through `ExtensionManager::fire_event()`
 - [ ] Tests:
-  - Discover finds `.rs` files in test directories
-  - Load + reload cycle works (tool registered, unloaded, re-registered)
-  - Extension tool is callable by the agent
+  - Discover finds `.rs` files and Cargo projects
+  - Full lifecycle: discover → compile → spawn → execute tool → get result
+  - Reload: old process killed, new process spawned, tools updated
+  - Crash recovery: kill extension process → manager detects, removes tools, logs error
 - [ ] `cargo test -p tau-cli` passes
 - [ ] `cargo check --workspace` passes
 
 ### US-035: Extension event system [ ]
 
-**Description:** As an extension author, I need to subscribe to agent lifecycle events so I can observe and modify behavior.
+**Description:** As an extension author, I need to subscribe to agent lifecycle events and optionally modify behavior.
 
 **Acceptance Criteria:**
-- [ ] Events available to extensions (passed as JSON over C ABI):
+- [ ] Events sent to subscribed extensions (as `Event` IPC messages):
   - `agent_start` — agent loop started
-  - `agent_end` — agent loop finished
-  - `turn_start` — new LLM call
-  - `turn_end` — LLM response + tool results complete
-  - `tool_call` — before tool execution (can block/modify)
-  - `tool_result` — after tool execution (can modify result)
-  - `input` — user input received (can transform)
-- [ ] Event handlers return optional JSON result:
-  - `tool_call` handler returns `{ "block": true, "reason": "..." }` to prevent execution
-  - `tool_result` handler returns `{ "content": [...] }` to modify result
-  - `input` handler returns `{ "action": "transform", "text": "..." }` to modify input
-- [ ] `ExtensionManager::fire_event()` calls all handlers for the event in extension load order, merges results
+  - `agent_end { messages }` — agent loop finished
+  - `turn_start` — new LLM call beginning
+  - `turn_end { message, tool_results }` — LLM response + tool results complete
+  - `tool_call { tool_call_id, tool_name, args }` — before tool execution
+  - `tool_result { tool_call_id, tool_name, content, is_error }` — after tool execution
+  - `input { text }` — user input received
+- [ ] Extensions respond with optional modifications via `EventResponse`:
+  - `tool_call` → `{ "block": true, "reason": "..." }` to prevent execution
+  - `tool_result` → `{ "content": [...], "is_error": false }` to override result
+  - `input` → `{ "action": "transform", "text": "modified..." }` to rewrite input
+  - Other events → response ignored (fire-and-forget)
+- [ ] `ExtensionManager::fire_event()`:
+  - Sends `Event` to all subscribed extensions in parallel
+  - For modifying events (`tool_call`, `tool_result`, `input`): collects responses with timeout (500ms default), applies first non-empty response
+  - For observe-only events: fire-and-forget, don't await responses
+- [ ] Timeout handling: if extension doesn't respond within timeout, skip it and log warning
 - [ ] Tests:
-  - Register handler for `tool_call` → handler invoked with correct data
-  - `tool_call` handler blocks → tool not executed
-  - `tool_result` handler modifies → modified result used
+  - Extension subscribes to `tool_call` → receives event with correct data
+  - Extension blocks `tool_call` → tool not executed, block reason shown
+  - Extension modifies `tool_result` → modified result used by agent
+  - Extension transforms `input` → transformed text sent to agent
+  - Slow extension → times out, event processing continues
 - [ ] `cargo test -p tau-cli` passes
 - [ ] `cargo check --workspace` passes
 
 ### US-REVIEW-PHASE6: Review extension system (US-032 through US-035) [ ]
 
-**Description:** Review the extension system as a cohesive layer.
+**Description:** Review the IPC extension system as a cohesive layer.
 
 **Acceptance Criteria:**
 - [ ] Identify phase scope: US-032 to US-035
 - [ ] Review all extension source files together
 - [ ] Evaluate quality:
-  - C ABI is truly stable (no Rust-specific types crossing boundary)
-  - JSON serialization for all data crossing FFI is correct
-  - `tau-ext` wrapper is ergonomic (extension authors don't see unsafe)
-  - Compilation caching works correctly (no stale dylibs)
-  - Memory safety: Library handles kept alive, no dangling pointers
+  - IPC protocol is clean and well-documented (could be implemented in Python/Go too)
+  - `tau-ext` wrapper hides all IPC plumbing from extension authors
+  - Compilation + caching is robust (handles edge cases: missing rustc, permissions, disk full)
+  - Process lifecycle is correct (no zombies, no leaked file handles)
 - [ ] Cross-task analysis:
-  - Verify extension tools integrate with agent (appear in tool list, executable)
-  - Verify event handlers fire at correct lifecycle points
-  - Verify reload drops old Library handles before loading new ones
-  - Check error handling: compile errors shown to user, bad extensions don't crash tau
-  - Verify `tau-ext` crate is independently publishable (extension authors add it as dependency)
+  - Verify extension tools integrate with agent (appear in tool list, executable end-to-end)
+  - Verify events fire at correct lifecycle points and responses modify behavior
+  - Verify reload kills old processes before spawning new ones (no port/resource conflicts)
+  - Verify extension crash doesn't break tau (graceful degradation)
+  - Verify concurrent tool execution across multiple extensions works
+  - Trace full flow: user types → input event → extension transforms → agent prompt → tool call event → extension blocks → skip
 - [ ] If issues found: insert fix tasks, append to progress.txt
 - [ ] If no issues: append "## Phase 6 review PASSED" to progress.txt, mark [x]
 
