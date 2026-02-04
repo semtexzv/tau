@@ -644,10 +644,10 @@ idiomatic Rust async/await.
 - [x] `cargo check -p tau-iface` passes (link errors are expected without tau-rt.so present;
   the real test is in US-RT-003)
 
-### GIT-PUSH: Push US-RT-001 through US-RT-002 [ ]
+### GIT-PUSH: Push US-RT-001 through US-RT-002 [x]
 **Acceptance Criteria:**
-- [ ] `git add -A && git commit -m "feat: tau-rt and tau-iface (US-RT-001, US-RT-002)"`
-- [ ] `git push origin master`
+- [x] `git add -A && git commit -m "feat: tau-rt and tau-iface (US-RT-001, US-RT-002)"`
+- [x] `git push origin master`
 
 ### US-RT-002b: Vendor async crates with tau-rt backend feature [ ]
 
