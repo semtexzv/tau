@@ -102,12 +102,12 @@ The event loop is async (tokio). The TUI is generic over a user event type `E`, 
 - [x] `cargo test` passes
 - [x] `cargo check` passes
 
-### US-005: Component trait and Container [ ]
+### US-005: Component trait and Container [x]
 
 **Description:** As a developer, I need the core `Component` trait and a `Container` that holds children, so I can compose UI elements.
 
 **Acceptance Criteria:**
-- [ ] `Component` trait in `src/component.rs`:
+- [x] `Component` trait in `src/component.rs`:
   ```rust
   pub trait Component {
       fn render(&self, width: u16) -> Vec<String>;
@@ -115,16 +115,16 @@ The event loop is async (tokio). The TUI is generic over a user event type `E`, 
       fn invalidate(&mut self) {}
   }
   ```
-- [ ] `Container` struct implementing `Component`:
+- [x] `Container` struct implementing `Component`:
   - Holds `Vec<Box<dyn Component>>`
   - `add_child()`, `remove_child(index)`, `clear()`
   - `render()` concatenates all children's rendered lines
   - `invalidate()` propagates to all children
-- [ ] Tests:
+- [x] Tests:
   - Empty container renders to empty `Vec`
   - Container with mock components concatenates their output
-- [ ] `cargo test` passes
-- [ ] `cargo check` passes
+- [x] `cargo test` passes
+- [x] `cargo check` passes
 
 ### US-006: TUI engine with full rendering [ ]
 

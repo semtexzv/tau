@@ -40,3 +40,15 @@
   - strip_ansi delegates to extract_ansi_code for consistent parsing
 ## Task self-review PASSED
 ---
+
+## Iteration 4 - US-004: Visible width calculation
+- What was done: Implemented `visible_width()` and `truncate_to_width()` in src/utils.rs. Added 18 new tests covering ASCII, ANSI, wide chars, tabs, truncation with ellipsis, ANSI preservation, wide char truncation, edge cases (empty string, max_width < ellipsis width, empty ellipsis).
+- Files changed: src/utils.rs, PRD.md
+- Learnings for future iterations:
+  - `visible_width` strips ANSI first via `strip_ansi`, then sums per-char widths with `UnicodeWidthStr::width` on 1-char slices
+  - `truncate_to_width` walks bytes manually, passing through ANSI codes and counting grapheme widths — this pattern (byte-walking with ANSI passthrough) will recur in `wrap_text_with_ansi` (US-010)
+  - Tab = 3 spaces convention from pi-mono
+  - `unicode_segmentation::UnicodeSegmentation` used for grapheme-aware truncation
+  - `saturating_sub` handles edge case where ellipsis is wider than max_width
+## Task self-review PASSED
+---
