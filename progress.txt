@@ -315,3 +315,50 @@ Fix inserted as US-012a: Input scroll and padding must operate consistently in c
   - Overlay compositing is surprisingly correct with ANSI codes — the slice_from_column + splice pattern handles edge cases well through design (using resets as boundaries).
   - RefCell for caching in render(&self) is the standard pattern — all components that need it use it correctly.
 ---
+
+## Iteration 2 - US-012a: Fix Input horizontal scrolling and padding for wide characters
+- What was done: Fixed two bugs in Input component where compute_scroll and render conflated char indices with column widths. Added `char_col_width()` and `chars_col_width()` helpers using `unicode_width::UnicodeWidthChar`. Rewrote `compute_scroll()` to accept `&[char]` and loop using column-width comparisons. Rewrote render's visible_end to walk chars summing column widths. Fixed padding to use `vis_cols` + `cursor_extra` (1 for space cursor at end, 0 when cursor in text). Added 6 wide character tests. All 258 tests pass.
+- Files changed: crates/tau-tui/src/components/input.rs, PRD.md
+- Learnings for future iterations:
+  - When a component mixes char indices with column widths, ALL comparisons must be consistent — this is the same class of bug as hardware_cursor_row vs cursor_row
+  - `compute_scroll` is still O(n) per render in worst case (incrementing offset one char at a time) — acceptable for typical terminal input but could be optimized with backward walk if needed
+  - `visible_width` import moved from module scope to test-only since render now computes vis_cols directly during the visible_end walk — cleaner than calling visible_width on the sliced string
+  - `char_col_width` uses `.unwrap_or(0)` for control chars — defensive, since Input only accepts printable chars from KeyCode::Char
+  - For cursor-at-end case: vis_cols already <= available-1 (guaranteed by compute_scroll), so adding 1 for space cursor never overflows available columns
+  - Wide chars at boundary: if a wide char doesn't fit, visible_end stops before it, leaving unused columns that padding fills
+## Task self-review PASSED
+---
+
+## Iteration 3 - US-REVIEW-PHASE2: Re-review components and overlays (post US-012a fix)
+- What was done: Re-reviewed all 7 source files across US-009 through US-014 (spacer.rs, text.rs, box_component.rs, input.rs, select_list.rs, tui.rs overlay system, utils.rs SGR/slice additions) after US-012a fix. All 258 tests pass. 6 clippy warnings (style only: 2 type_complexity, 4 repeat_n). Zero errors.
+- Files changed: PRD.md (review task marked [x]), progress.txt (this entry)
+
+### Per-task re-evaluation (all PASS):
+- US-009 (Spacer): Trivially correct. vec![String::new(); lines]. 6 tests.
+- US-010 (Text): Word wrapping with SGR tracking correct. RefCell cache appropriate. Padding fills to full width. 32 tests.
+- US-011 (BoxComponent): Clean container+decoration. bg applied with reset suffix. Empty children → empty. 12 tests.
+- US-012 + US-012a (Input + fix): Traced critical bug case "你好世界测试编程代码" at width 12 — compute_scroll now correctly uses chars_col_width for column comparisons (offset=6, vis_cols=8, content_cols=11, pad=1, total=12 ✓). Also traced cursor-in-middle and cursor-at-start cases. All correct. 34 tests (6 wide-char tests from US-012a).
+- US-013 (SelectList): Clean filtered_indices indirection. Wrapping, scrolling, filtering all correct. Lines padded to full width. "→ " prefix is 2 visible columns, matching "  " for unselected. 31 tests.
+- US-014 (Overlay): splice_overlay_into_line with ANSI resets as boundaries is correct. Traced case with \x1b[31m active base → reset before overlay → re-apply SGR after overlay ✓. Focus save/restore is stack-based LIFO. Key forwarding to topmost visible overlay correct. Rc<Cell<bool>> appropriate since TUI is !Send. 32 tests.
+
+### Cross-task analysis (all clean):
+- Component trait API: Consistent render(&self, width) across all components. Interior mutability (RefCell/Cell) only where needed.
+- TUI<E> generic: Does NOT leak into Component. Components are E-agnostic. TUI<()> works.
+- Full-width padding: All visible-content components pad to full width. Spacer returns empty strings (vertical spacing only).
+- visible_width: Used correctly in Text, BoxComponent, SelectList, overlay splice. Input uses char_col_width directly (appropriate for char-level walking).
+- Overlay compositing: splice handles ANSI codes at boundaries via truncate_to_width + slice_from_column. SGR state re-applied for "after" portion.
+- Overlay focus: Stack-based save/restore with nested overlays verified and correct.
+- SelectList + overlay integration: Works through component model — no special integration needed.
+- No duplicated patterns worth extracting: Each component's padding logic differs (bg, prompt, prefix, padding_x/y).
+- Naming/style: Consistent snake_case, module structure, test organization throughout.
+- Data flows: Components render independently, Container concatenates, overlay composites onto base. Clean, unidirectional.
+- Clippy: 6 style-only warnings (type_complexity for callback types, repeat_n modernization). No correctness issues.
+
+## Phase 2 review PASSED
+- Learnings for future iterations:
+  - Iterative review confirmed: first pass found wide-char bug in US-012, fix in US-012a was clean and correct, re-review confirms everything is solid
+  - The char-index vs column-width confusion is a recurring bug class (also seen in US-007 as hardware_cursor_row vs cursor_row) — always verify width arithmetic is consistent
+  - 258 tests provide strong coverage for the component and overlay layers
+  - The overlay splice pattern (reset boundaries + SGR re-application) is elegant and handles edge cases through design, not special-case code
+  - compute_scroll's O(n) loop is acceptable for terminal input — could be optimized later if needed
+---

@@ -465,28 +465,28 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - [x] `cargo test -p tau-tui` passes
 - [x] `cargo check` passes
 
-### US-REVIEW-PHASE2: Review components and overlays (US-009 through US-014) [ ]
+### US-REVIEW-PHASE2: Review components and overlays (US-009 through US-014) [x]
 
 **Description:** Review all components and the overlay system as a cohesive layer.
 
 **Acceptance Criteria:**
-- [ ] Identify phase scope: US-009 to US-014
-- [ ] Review all component files together
-- [ ] Evaluate quality:
+- [x] Identify phase scope: US-009 to US-014
+- [x] Review all component files together
+- [x] Evaluate quality:
   - Consistent API patterns across components
   - Component trait is not fighting Rust's ownership model
   - Overlay compositing handles edge cases (wide chars at boundaries, ANSI codes)
   - visible_width used correctly everywhere
-- [ ] Cross-task analysis:
+- [x] Cross-task analysis:
   - Verify all components pad output to full width (no rendering artifacts)
   - Verify Input cursor math is correct with Unicode
   - Verify overlay focus save/restore works with nested overlays
   - Check SelectList + overlay integration works (common pattern: popup select list)
   - Verify `TUI<E>` generic doesn't leak into Component trait (components shouldn't care about E)
-- [ ] If issues found:
+- [x] If issues found:
   - Insert fix tasks
   - Append findings to progress.txt
-- [ ] If no issues:
+- [x] If no issues:
   - Append "## Phase 2 review PASSED" to progress.txt
   - Mark this review task [x]
 
