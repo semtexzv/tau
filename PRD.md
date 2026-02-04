@@ -664,7 +664,7 @@ when the host binary (which links `libtau_rt`) loads.
 - [x] `git add -A && git commit -m "feat: tau-rt and tau-iface (US-RT-001, US-RT-002)"`
 - [x] `git push origin master`
 
-### US-RT-002b: Patch crossterm EventStream to use tau-iface [ ]
+### US-RT-002b: Patch crossterm EventStream to use tau-iface [x]
 
 **Description:** Patch vendored crossterm's `EventStream` to use `tau_iface::AsyncFd`
 on stdin instead of the current approach (blocking OS thread + mio sync polling).
@@ -679,17 +679,17 @@ The sync mio-based `poll_internal` / `read_internal` path (used by the blocking
 Only the `event-stream` async path needs patching.
 
 **Acceptance Criteria:**
-- [ ] Vendored crossterm at `vendor/crossterm` (already added as submodule)
-- [ ] Patch `src/event/stream.rs`: replace blocking thread + mio waker approach with
+- [x] Vendored crossterm at `vendor/crossterm` (already added as submodule)
+- [x] Patch `src/event/stream.rs`: replace blocking thread + mio waker approach with
   `tau_iface::AsyncFd` wrapping stdin fd. `poll_next()` awaits readable on the AsyncFd,
   then calls `read_internal()` when data is available.
-- [ ] Remove `mio` and `signal-hook-mio` as dependencies of the `event-stream` feature
+- [x] Remove `mio` and `signal-hook-mio` as dependencies of the `event-stream` feature
   (they remain for the sync `events` feature)
-- [ ] Workspace `[patch.crates-io]` maps crossterm to vendored path
-- [ ] Add `tau-iface` as a dependency of vendored crossterm (behind `event-stream` feature)
-- [ ] `crossterm::event::EventStream` works with tau-rt reactor
-- [ ] `cargo check --workspace` passes
-- [ ] All existing tau-tui tests still pass
+- [x] Workspace `[patch.crates-io]` maps crossterm to vendored path
+- [x] Add `tau-iface` as a dependency of vendored crossterm (behind `event-stream` feature)
+- [x] `crossterm::event::EventStream` works with tau-rt reactor
+- [x] `cargo check --workspace` passes
+- [x] All existing tau-tui tests still pass
 
 ### US-RT-003: Integration test — host and plugin share reactor [ ]
 
