@@ -266,6 +266,33 @@ The only way to share a reactor is `crate-type = "dylib"` (Rust dynamic linking)
 
 ---
 
-## Deferred
+## Chosen Approach: Shared cdylib Runtime (Option G)
 
-This investigation is captured for future reference. Extensions are not included in the current PRD scope. When we add them, start with Option A (IPC).
+After investigating all options above, we found a viable approach not covered in
+the original analysis: **a shared C-ABI dynamic library (`tau-rt.so`) that both
+host and extensions link against.** Since the OS dynamic linker loads it exactly
+once, all parties share the same reactor, executor, and timer heap.
+
+This combines the best properties of several options:
+- **Full async** like Option A (IPC) — extensions use `async/await` naturally
+- **In-process** like Option B/C/D — no serialization, no pipe overhead
+- **Stable C ABI** like Option B — works across compiler versions
+- **Shared reactor** — no duplicate statics
+
+The extension cannot use ecosystem async crates (reqwest, tokio) directly — those
+would bring their own globals. Instead, extensions use `tau-iface` wrappers
+(`TcpStream`, `Timer`, `spawn`, `sleep`) which route through the shared runtime.
+HTTP is provided by `tau-http` (built on `tau-iface` primitives).
+
+**Full design:** `TAU-RT-DESIGN.md`
+**PRD entries:** Phase 2b (US-RT-001 through US-RT-006) in `PRD.md`
+
+### Deferred
+
+Extension **loading and API** (tool registration, event hooks) is not in v1 scope.
+The runtime architecture is built now to enable extensions in v2 without
+restructuring. When we add extension loading, the pieces are:
+- `libloading` to `dlopen` extension cdylibs
+- Extensions export `extern "C" fn tau_ext_init(api: &mut ExtensionApi)`
+- `ExtensionApi` allows registering tools, subscribing to events
+- All async work goes through `tau-iface` → shared `tau-rt.so`

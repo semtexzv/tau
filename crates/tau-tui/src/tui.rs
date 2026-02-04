@@ -1,11 +1,14 @@
 // TUI engine with rendering and async event loop.
 
+use std::cell::Cell;
 use std::fmt::Write;
+use std::rc::Rc;
 use futures::StreamExt;
 use tokio::sync::mpsc::{self, UnboundedSender, UnboundedReceiver};
 
 use crate::component::{Component, Container};
 use crate::terminal::Terminal;
+use crate::utils::{visible_width, truncate_to_width, slice_from_column};
 
 /// Events delivered to the TUI handler.
 #[derive(Debug)]
@@ -16,6 +19,56 @@ pub enum Event<E> {
     Resize(u16, u16),
     /// A user-defined event from a spawned task.
     User(E),
+}
+
+/// Anchor point for overlay positioning relative to the base content area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    Center,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+/// Options for overlay positioning and sizing.
+#[derive(Debug, Clone)]
+pub struct OverlayOptions {
+    pub width: u16,
+    pub max_height: Option<u16>,
+    pub anchor: Anchor,
+    pub offset_x: i16,
+    pub offset_y: i16,
+}
+
+/// Handle to a displayed overlay, allowing visibility control.
+///
+/// Cloning creates another reference to the same overlay's visibility state.
+/// Use `hide()` to make the overlay invisible without removing it from the stack.
+/// To fully remove an overlay and restore focus, use `TUI::hide_overlay()`.
+#[derive(Clone)]
+pub struct OverlayHandle {
+    hidden: Rc<Cell<bool>>,
+}
+
+impl OverlayHandle {
+    /// Hide this overlay (sets hidden = true).
+    pub fn hide(&self) {
+        self.hidden.set(true);
+    }
+
+    /// Set the hidden state explicitly.
+    pub fn set_hidden(&self, hidden: bool) {
+        self.hidden.set(hidden);
+    }
+}
+
+/// Internal overlay entry in the stack.
+struct OverlayEntry {
+    component: Box<dyn Component>,
+    options: OverlayOptions,
+    hidden: Rc<Cell<bool>>,
+    saved_focus: Option<usize>,
 }
 
 /// The main TUI engine. Renders a component tree to a terminal.
@@ -45,6 +98,8 @@ pub struct TUI<E: Send + 'static> {
     /// In tests, events are injected directly.
     crossterm_tx: UnboundedSender<crossterm::event::Event>,
     crossterm_rx: Option<UnboundedReceiver<crossterm::event::Event>>,
+    /// Stack of overlay entries (topmost is last).
+    overlays: Vec<OverlayEntry>,
 }
 
 impl<E: Send + 'static> TUI<E> {
@@ -65,6 +120,7 @@ impl<E: Send + 'static> TUI<E> {
             focused: None,
             crossterm_tx,
             crossterm_rx: Some(crossterm_rx),
+            overlays: Vec::new(),
         }
     }
 
@@ -99,6 +155,40 @@ impl<E: Send + 'static> TUI<E> {
     /// Returns the index of the currently focused child, if any.
     pub fn focused(&self) -> Option<usize> {
         self.focused
+    }
+
+    /// Show an overlay component on top of the base content.
+    ///
+    /// Saves the current focus state. Returns an `OverlayHandle` for
+    /// controlling the overlay's visibility. Multiple overlays form a stack;
+    /// the topmost visible overlay receives key input.
+    pub fn show_overlay(
+        &mut self,
+        component: Box<dyn Component>,
+        options: OverlayOptions,
+    ) -> OverlayHandle {
+        let hidden = Rc::new(Cell::new(false));
+        let handle = OverlayHandle { hidden: hidden.clone() };
+        let saved_focus = self.focused;
+        self.overlays.push(OverlayEntry {
+            component,
+            options,
+            hidden,
+            saved_focus,
+        });
+        handle
+    }
+
+    /// Remove the topmost overlay and restore its saved focus state.
+    pub fn hide_overlay(&mut self) {
+        if let Some(entry) = self.overlays.pop() {
+            self.focused = entry.saved_focus;
+        }
+    }
+
+    /// Returns whether any overlay is currently visible (not hidden).
+    pub fn has_overlay(&self) -> bool {
+        self.overlays.iter().any(|e| !e.hidden.get())
     }
 
     /// Start the terminal (enable raw mode, hide cursor).
@@ -174,11 +264,21 @@ impl<E: Send + 'static> TUI<E> {
             };
 
             if let Some(event) = event {
-                // Forward key events to focused component
+                // Forward key events: overlays first, then focused component
                 if let Event::Key(ref key) = event {
-                    if let Some(idx) = self.focused {
-                        if let Some(child) = self.root.child_mut(idx) {
-                            child.handle_input(key);
+                    let mut forwarded = false;
+                    for entry in self.overlays.iter_mut().rev() {
+                        if !entry.hidden.get() {
+                            entry.component.handle_input(key);
+                            forwarded = true;
+                            break;
+                        }
+                    }
+                    if !forwarded {
+                        if let Some(idx) = self.focused {
+                            if let Some(child) = self.root.child_mut(idx) {
+                                child.handle_input(key);
+                            }
                         }
                     }
                 }
@@ -208,7 +308,45 @@ impl<E: Send + 'static> TUI<E> {
     /// If nothing changed, no output is written at all.
     pub fn render(&mut self) {
         let (width, _height) = self.terminal.size();
-        let lines = self.root.render(width);
+        let mut lines = self.root.render(width);
+
+        // Composite visible overlays onto base content
+        for overlay in &self.overlays {
+            if overlay.hidden.get() {
+                continue;
+            }
+            let ov_width = (overlay.options.width as usize).min(width as usize);
+            if ov_width == 0 {
+                continue;
+            }
+            let mut ov_lines = overlay.component.render(ov_width as u16);
+            if let Some(max_h) = overlay.options.max_height {
+                ov_lines.truncate(max_h as usize);
+            }
+            let ov_height = ov_lines.len();
+            if ov_height == 0 {
+                continue;
+            }
+
+            let (row, col) = calculate_overlay_position(
+                &overlay.options,
+                width as usize,
+                lines.len(),
+                ov_width,
+                ov_height,
+            );
+
+            // Extend base lines if overlay goes beyond content
+            while lines.len() < row + ov_height {
+                lines.push(String::new());
+            }
+
+            // Splice each overlay line into the corresponding base line
+            for (i, ov_line) in ov_lines.iter().enumerate() {
+                lines[row + i] =
+                    splice_overlay_into_line(&lines[row + i], col, ov_line, ov_width);
+            }
+        }
 
         let mut buffer = String::new();
         let is_first_render = self.previous_width == 0;
@@ -308,6 +446,60 @@ impl<E: Send + 'static> TUI<E> {
     pub fn previous_width(&self) -> u16 {
         self.previous_width
     }
+}
+
+/// Calculate the (row, col) position for an overlay within the content area.
+fn calculate_overlay_position(
+    options: &OverlayOptions,
+    content_width: usize,
+    content_height: usize,
+    overlay_width: usize,
+    overlay_height: usize,
+) -> (usize, usize) {
+    let (base_row, base_col) = match options.anchor {
+        Anchor::Center => (
+            content_height.saturating_sub(overlay_height) / 2,
+            content_width.saturating_sub(overlay_width) / 2,
+        ),
+        Anchor::TopLeft => (0, 0),
+        Anchor::TopRight => (0, content_width.saturating_sub(overlay_width)),
+        Anchor::BottomLeft => (content_height.saturating_sub(overlay_height), 0),
+        Anchor::BottomRight => (
+            content_height.saturating_sub(overlay_height),
+            content_width.saturating_sub(overlay_width),
+        ),
+    };
+
+    let row = (base_row as i32 + options.offset_y as i32).max(0) as usize;
+    let col = (base_col as i32 + options.offset_x as i32).max(0) as usize;
+    (row, col)
+}
+
+/// Splice overlay content into a base line at the given column position.
+///
+/// Cuts the base line at `col`, inserts the overlay content, then resumes
+/// the base line after `col + overlay_width`. Resets ANSI state between
+/// sections and re-applies the base's SGR state for the "after" portion.
+fn splice_overlay_into_line(
+    base: &str,
+    col: usize,
+    overlay: &str,
+    overlay_width: usize,
+) -> String {
+    let before = truncate_to_width(base, col, "");
+    let before_width = visible_width(&before);
+    let pad = " ".repeat(col.saturating_sub(before_width));
+
+    let base_width = visible_width(base);
+    let after_col = col + overlay_width;
+    let after = if after_col < base_width {
+        let (sgr, remaining) = slice_from_column(base, after_col);
+        format!("{}{}", sgr, remaining)
+    } else {
+        String::new()
+    };
+
+    format!("{}{}\x1b[0m{}\x1b[0m{}", before, pad, overlay, after)
 }
 
 #[cfg(test)]
@@ -1161,5 +1353,606 @@ mod tests {
             writes_before_stop,
             "stop() should not write cursor movement when already at end"
         );
+    }
+
+    // ── Overlay: splice_overlay_into_line ───────────────────────────
+
+    #[test]
+    fn splice_overlay_at_start() {
+        let result = super::splice_overlay_into_line("hello world", 0, "XX", 2);
+        // "XX" at col 0 replaces "he", rest is "llo world"
+        assert_eq!(
+            result,
+            "\x1b[0mXX\x1b[0mllo world"
+        );
+    }
+
+    #[test]
+    fn splice_overlay_in_middle() {
+        let result = super::splice_overlay_into_line("hello world", 3, "XX", 2);
+        // before="hel", overlay="XX", after="world" (from col 5)
+        assert_eq!(
+            result,
+            "hel\x1b[0mXX\x1b[0m world"
+        );
+    }
+
+    #[test]
+    fn splice_overlay_at_end() {
+        let result = super::splice_overlay_into_line("hello", 3, "XX", 2);
+        // before="hel", overlay="XX", after="" (col 5 = end of "hello")
+        assert_eq!(
+            result,
+            "hel\x1b[0mXX\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn splice_overlay_beyond_base() {
+        let result = super::splice_overlay_into_line("hi", 5, "XX", 2);
+        // before="hi", pad="   " (3 spaces to reach col 5), overlay="XX", after=""
+        assert_eq!(
+            result,
+            "hi   \x1b[0mXX\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn splice_overlay_on_empty_base() {
+        let result = super::splice_overlay_into_line("", 3, "overlay", 7);
+        // before="", pad="   ", overlay, after=""
+        assert_eq!(
+            result,
+            "   \x1b[0moverlay\x1b[0m"
+        );
+    }
+
+    // ── Overlay: calculate_overlay_position ─────────────────────────
+
+    #[test]
+    fn overlay_position_center() {
+        let (row, col) = super::calculate_overlay_position(
+            &OverlayOptions {
+                width: 10,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+            80,  // content_width
+            20,  // content_height
+            10,  // overlay_width
+            4,   // overlay_height
+        );
+        assert_eq!(row, 8);  // (20 - 4) / 2 = 8
+        assert_eq!(col, 35); // (80 - 10) / 2 = 35
+    }
+
+    #[test]
+    fn overlay_position_top_left() {
+        let (row, col) = super::calculate_overlay_position(
+            &OverlayOptions {
+                width: 10,
+                max_height: None,
+                anchor: Anchor::TopLeft,
+                offset_x: 2,
+                offset_y: 1,
+            },
+            80, 20, 10, 4,
+        );
+        assert_eq!(row, 1); // 0 + offset_y
+        assert_eq!(col, 2); // 0 + offset_x
+    }
+
+    #[test]
+    fn overlay_position_bottom_right() {
+        let (row, col) = super::calculate_overlay_position(
+            &OverlayOptions {
+                width: 10,
+                max_height: None,
+                anchor: Anchor::BottomRight,
+                offset_x: 0,
+                offset_y: 0,
+            },
+            80, 20, 10, 4,
+        );
+        assert_eq!(row, 16); // 20 - 4 = 16
+        assert_eq!(col, 70); // 80 - 10 = 70
+    }
+
+    #[test]
+    fn overlay_position_negative_offset_clamped() {
+        let (row, col) = super::calculate_overlay_position(
+            &OverlayOptions {
+                width: 10,
+                max_height: None,
+                anchor: Anchor::TopLeft,
+                offset_x: -5,
+                offset_y: -5,
+            },
+            80, 20, 10, 4,
+        );
+        assert_eq!(row, 0); // clamped to 0
+        assert_eq!(col, 0); // clamped to 0
+    }
+
+    // ── Overlay: TUI methods ────────────────────────────────────────
+
+    #[test]
+    fn show_overlay_returns_handle() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        let handle = tui.show_overlay(
+            Box::new(StubComponent::new(&["popup"])),
+            OverlayOptions {
+                width: 20,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+        assert!(tui.has_overlay());
+        handle.hide();
+        assert!(!tui.has_overlay());
+    }
+
+    #[test]
+    fn has_overlay_false_initially() {
+        let tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        assert!(!tui.has_overlay());
+    }
+
+    #[test]
+    fn hide_overlay_pops_topmost() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        tui.show_overlay(
+            Box::new(StubComponent::new(&["popup"])),
+            OverlayOptions {
+                width: 20,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+        assert!(tui.has_overlay());
+        tui.hide_overlay();
+        assert!(!tui.has_overlay());
+    }
+
+    #[test]
+    fn hide_overlay_noop_when_empty() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        tui.hide_overlay(); // should not panic
+        assert!(!tui.has_overlay());
+    }
+
+    #[test]
+    fn overlay_handle_set_hidden_toggle() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        let handle = tui.show_overlay(
+            Box::new(StubComponent::new(&["popup"])),
+            OverlayOptions {
+                width: 20,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+        assert!(tui.has_overlay());
+        handle.set_hidden(true);
+        assert!(!tui.has_overlay());
+        handle.set_hidden(false);
+        assert!(tui.has_overlay());
+    }
+
+    // ── Overlay: compositing in render ──────────────────────────────
+
+    #[test]
+    fn overlay_composited_at_correct_position() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(20, 24)));
+        // Base: 3 lines of 20 chars
+        tui.root().add_child(Box::new(StubComponent::new(&[
+            "aaaaaaaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbbbbbb",
+            "cccccccccccccccccccc",
+        ])));
+        // Overlay: 1 line, 4 wide, at TopLeft (0,0) + offset (5,1)
+        tui.show_overlay(
+            Box::new(StubComponent::new(&["XXXX"])),
+            OverlayOptions {
+                width: 4,
+                max_height: None,
+                anchor: Anchor::TopLeft,
+                offset_x: 5,
+                offset_y: 1,
+            },
+        );
+        tui.render();
+
+        // Line 1 (row index 1) should have overlay at col 5
+        let lines = tui.previous_lines();
+        assert_eq!(lines.len(), 3);
+        // Line 0 unchanged
+        assert_eq!(lines[0], "aaaaaaaaaaaaaaaaaaaa");
+        // Line 1: "bbbbb" + reset + "XXXX" + reset + "bbbbbbbbbbb" (from col 9)
+        assert_eq!(
+            lines[1],
+            "bbbbb\x1b[0mXXXX\x1b[0mbbbbbbbbbbb"
+        );
+        // Line 2 unchanged
+        assert_eq!(lines[2], "cccccccccccccccccccc");
+    }
+
+    #[test]
+    fn overlay_center_position() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(20, 24)));
+        // Base: 5 lines
+        tui.root().add_child(Box::new(StubComponent::new(&[
+            "12345678901234567890",
+            "12345678901234567890",
+            "12345678901234567890",
+            "12345678901234567890",
+            "12345678901234567890",
+        ])));
+        // Overlay: 1 line, 4 wide, centered
+        tui.show_overlay(
+            Box::new(StubComponent::new(&["XXXX"])),
+            OverlayOptions {
+                width: 4,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+        tui.render();
+
+        let lines = tui.previous_lines();
+        // Center row: (5-1)/2 = 2, center col: (20-4)/2 = 8
+        // Lines 0,1,3,4 unchanged
+        assert_eq!(lines[0], "12345678901234567890");
+        assert_eq!(lines[1], "12345678901234567890");
+        // Line 2: "12345678" + reset + "XXXX" + reset + "34567890"
+        assert_eq!(
+            lines[2],
+            "12345678\x1b[0mXXXX\x1b[0m34567890"
+        );
+        assert_eq!(lines[3], "12345678901234567890");
+        assert_eq!(lines[4], "12345678901234567890");
+    }
+
+    #[test]
+    fn overlay_extends_base_lines_if_needed() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(20, 24)));
+        // Base: 1 line
+        tui.root().add_child(Box::new(StubComponent::new(&["base"])));
+        // Overlay at row 2 (beyond base)
+        tui.show_overlay(
+            Box::new(StubComponent::new(&["overlay"])),
+            OverlayOptions {
+                width: 7,
+                max_height: None,
+                anchor: Anchor::TopLeft,
+                offset_x: 0,
+                offset_y: 2,
+            },
+        );
+        tui.render();
+
+        let lines = tui.previous_lines();
+        assert_eq!(lines.len(), 3); // extended from 1 to 3
+        assert_eq!(lines[0], "base");
+        assert_eq!(lines[1], ""); // empty padding line
+        assert_eq!(lines[2], "\x1b[0moverlay\x1b[0m");
+    }
+
+    #[test]
+    fn overlay_max_height_truncates() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(20, 24)));
+        tui.root().add_child(Box::new(StubComponent::new(&[
+            "aaaaaaaaaa",
+            "bbbbbbbbbb",
+            "cccccccccc",
+            "dddddddddd",
+        ])));
+        // Overlay: 3 lines, but max_height=1
+        tui.show_overlay(
+            Box::new(StubComponent::new(&["XX", "YY", "ZZ"])),
+            OverlayOptions {
+                width: 2,
+                max_height: Some(1),
+                anchor: Anchor::TopLeft,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+        tui.render();
+
+        let lines = tui.previous_lines();
+        // Only first overlay line should be composited
+        assert_eq!(lines[0], "\x1b[0mXX\x1b[0maaaaaaaa");
+        assert_eq!(lines[1], "bbbbbbbbbb"); // unchanged
+    }
+
+    #[test]
+    fn hidden_overlay_not_composited() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(20, 24)));
+        tui.root().add_child(Box::new(StubComponent::new(&["base content"])));
+        let handle = tui.show_overlay(
+            Box::new(StubComponent::new(&["popup"])),
+            OverlayOptions {
+                width: 5,
+                max_height: None,
+                anchor: Anchor::TopLeft,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+        handle.hide();
+        tui.render();
+
+        let lines = tui.previous_lines();
+        assert_eq!(lines[0], "base content"); // unchanged, overlay hidden
+    }
+
+    // ── Overlay: focus save/restore ─────────────────────────────────
+
+    #[test]
+    fn overlay_saves_and_restores_focus() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        tui.root().add_child(Box::new(StubComponent::new(&["child0"])));
+        tui.root().add_child(Box::new(StubComponent::new(&["child1"])));
+        tui.set_focus(Some(1));
+        assert_eq!(tui.focused(), Some(1));
+
+        // Show overlay — saves focus
+        tui.show_overlay(
+            Box::new(StubComponent::new(&["popup"])),
+            OverlayOptions {
+                width: 20,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+
+        // Change focus (as overlay handler might)
+        tui.set_focus(Some(0));
+        assert_eq!(tui.focused(), Some(0));
+
+        // Hide overlay — restores saved focus
+        tui.hide_overlay();
+        assert_eq!(tui.focused(), Some(1));
+    }
+
+    #[test]
+    fn nested_overlays_restore_focus_correctly() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        tui.set_focus(Some(0));
+
+        // Show first overlay — saves focus=Some(0)
+        tui.show_overlay(
+            Box::new(StubComponent::new(&["popup1"])),
+            OverlayOptions {
+                width: 20,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+        tui.set_focus(Some(1)); // change focus while overlay is up
+
+        // Show second overlay — saves focus=Some(1)
+        tui.show_overlay(
+            Box::new(StubComponent::new(&["popup2"])),
+            OverlayOptions {
+                width: 20,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+
+        // Hide second overlay — restores to Some(1)
+        tui.hide_overlay();
+        assert_eq!(tui.focused(), Some(1));
+
+        // Hide first overlay — restores to Some(0)
+        tui.hide_overlay();
+        assert_eq!(tui.focused(), Some(0));
+    }
+
+    // ── Overlay: input forwarding (overlay stack) ───────────────────
+
+    #[tokio::test]
+    async fn overlay_topmost_gets_input() {
+        use std::sync::{Arc, Mutex};
+
+        /// Component that records received key events.
+        struct KeyRecorder {
+            keys: Arc<Mutex<Vec<crossterm::event::KeyCode>>>,
+        }
+
+        impl Component for KeyRecorder {
+            fn render(&self, _width: u16) -> Vec<String> {
+                vec!["recorder".to_string()]
+            }
+            fn handle_input(&mut self, event: &crossterm::event::KeyEvent) {
+                self.keys.lock().unwrap().push(event.code);
+            }
+        }
+
+        let root_keys = Arc::new(Mutex::new(Vec::new()));
+        let overlay_keys = Arc::new(Mutex::new(Vec::new()));
+
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        tui.root().add_child(Box::new(KeyRecorder {
+            keys: root_keys.clone(),
+        }));
+        tui.set_focus(Some(0));
+
+        // Show overlay with its own key recorder
+        tui.show_overlay(
+            Box::new(KeyRecorder {
+                keys: overlay_keys.clone(),
+            }),
+            OverlayOptions {
+                width: 20,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+
+        let ct_tx = tui.crossterm_event_tx();
+        tokio::spawn(async move {
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('x'),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            ct_tx.send(crossterm::event::Event::Key(key)).unwrap();
+        });
+
+        tui.run(|_event, tui| {
+            tui.quit();
+        })
+        .await;
+
+        // Overlay got the key, root did not
+        assert_eq!(overlay_keys.lock().unwrap().len(), 1);
+        assert_eq!(root_keys.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn overlay_hidden_falls_through_to_focused() {
+        use std::sync::{Arc, Mutex};
+
+        struct KeyRecorder {
+            keys: Arc<Mutex<Vec<crossterm::event::KeyCode>>>,
+        }
+
+        impl Component for KeyRecorder {
+            fn render(&self, _width: u16) -> Vec<String> {
+                vec!["recorder".to_string()]
+            }
+            fn handle_input(&mut self, event: &crossterm::event::KeyEvent) {
+                self.keys.lock().unwrap().push(event.code);
+            }
+        }
+
+        let root_keys = Arc::new(Mutex::new(Vec::new()));
+
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        tui.root().add_child(Box::new(KeyRecorder {
+            keys: root_keys.clone(),
+        }));
+        tui.set_focus(Some(0));
+
+        // Show overlay, then hide it
+        let handle = tui.show_overlay(
+            Box::new(StubComponent::new(&["popup"])),
+            OverlayOptions {
+                width: 20,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+        handle.hide();
+
+        let ct_tx = tui.crossterm_event_tx();
+        tokio::spawn(async move {
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('y'),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            ct_tx.send(crossterm::event::Event::Key(key)).unwrap();
+        });
+
+        tui.run(|_event, tui| {
+            tui.quit();
+        })
+        .await;
+
+        // Root component got the key (overlay was hidden)
+        assert_eq!(root_keys.lock().unwrap().len(), 1);
+        assert_eq!(
+            root_keys.lock().unwrap()[0],
+            crossterm::event::KeyCode::Char('y')
+        );
+    }
+
+    #[tokio::test]
+    async fn overlay_stack_topmost_visible_gets_input() {
+        use std::sync::{Arc, Mutex};
+
+        struct KeyRecorder {
+            keys: Arc<Mutex<Vec<crossterm::event::KeyCode>>>,
+        }
+
+        impl Component for KeyRecorder {
+            fn render(&self, _width: u16) -> Vec<String> {
+                vec!["recorder".to_string()]
+            }
+            fn handle_input(&mut self, event: &crossterm::event::KeyEvent) {
+                self.keys.lock().unwrap().push(event.code);
+            }
+        }
+
+        let overlay1_keys = Arc::new(Mutex::new(Vec::new()));
+        let overlay2_keys = Arc::new(Mutex::new(Vec::new()));
+
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+
+        // Show two overlays
+        tui.show_overlay(
+            Box::new(KeyRecorder {
+                keys: overlay1_keys.clone(),
+            }),
+            OverlayOptions {
+                width: 20,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+        tui.show_overlay(
+            Box::new(KeyRecorder {
+                keys: overlay2_keys.clone(),
+            }),
+            OverlayOptions {
+                width: 20,
+                max_height: None,
+                anchor: Anchor::Center,
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+
+        let ct_tx = tui.crossterm_event_tx();
+        tokio::spawn(async move {
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('z'),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            ct_tx.send(crossterm::event::Event::Key(key)).unwrap();
+        });
+
+        tui.run(|_event, tui| {
+            tui.quit();
+        })
+        .await;
+
+        // Only topmost (overlay2) got the key
+        assert_eq!(overlay2_keys.lock().unwrap().len(), 1);
+        assert_eq!(overlay1_keys.lock().unwrap().len(), 0);
     }
 }

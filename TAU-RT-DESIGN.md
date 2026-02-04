@@ -348,6 +348,45 @@ impl Drop for Timer {
 }
 ```
 
+### UdpSocket
+
+```rust
+pub struct UdpSocket {
+    fd: AsyncFd,
+}
+
+impl UdpSocket {
+    pub fn bind(addr: SocketAddr) -> io::Result<Self> {
+        let socket = std::net::UdpSocket::bind(addr)?;
+        socket.set_nonblocking(true)?;
+        let fd = AsyncFd::new(socket.as_raw_fd())?;
+        Ok(Self { fd })
+    }
+
+    pub async fn send_to(&self, buf: &[u8], addr: SocketAddr) -> io::Result<usize> {
+        loop {
+            self.fd.writable().await?;
+            match self.inner.send_to(buf, addr) {
+                Ok(n) => return Ok(n),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    pub async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        loop {
+            self.fd.readable().await?;
+            match self.inner.recv_from(buf) {
+                Ok(r) => return Ok(r),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+```
+
 ### TcpStream
 
 ```rust

@@ -240,3 +240,19 @@ Fix inserted as US-007a: TUI::stop() must move cursor from hardware_cursor_row t
   - Callbacks use `Option<Box<dyn FnMut>>` — clone the value before calling to avoid borrow issues
 ## Task self-review PASSED
 ---
+
+## Iteration 9 - US-013: SelectList component
+- What was done: Implemented SelectList component in src/components/select_list.rs. Selectable list with arrow-key navigation, wrapping, scrolling, filtering, and callbacks. SelectItem struct with value/label/description. Visible window rendering with "→ " prefix and bold/inverse styling for selected item. Scroll indicator "(N/M)" when list exceeds max_visible. set_filter() for case-insensitive prefix matching. 31 tests covering rendering, selection movement, wrapping, scrolling, filtering, callbacks, edge cases, object safety. All 220 tests pass.
+- Files changed: crates/tau-tui/src/components/select_list.rs (new), crates/tau-tui/src/components/mod.rs (module registration), PRD.md
+- Learnings for future iterations:
+  - SelectList uses `filtered_indices: Vec<usize>` as indirection layer — all selection/scroll operates on filtered indices, not raw items. Clean separation.
+  - `selected` and `scroll_offset` are indices into filtered_indices, not into items — this makes filter changes simple (just reset both to 0).
+  - Wrapping with modular arithmetic: `(selected + 1) % count` for down, `count - 1` for up-from-0.
+  - `ensure_visible()` adjusts scroll_offset after each move — simple 2-condition check.
+  - Bold+inverse combined: `\x1b[1;7m` for selected item — single SGR sequence with both attributes.
+  - Selected line gets `\x1b[0m` at end (after padding) so background extends to full width. Unselected lines have no ANSI at all.
+  - "(no items)" placeholder when filtered_indices is empty — consistent UX for empty states.
+  - Scroll indicator right-aligned: pad with spaces before indicator text.
+  - Callbacks clone the SelectItem before calling to avoid borrow issues with `&mut self` (same pattern as Input).
+## Task self-review PASSED
+---

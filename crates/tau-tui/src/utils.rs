@@ -196,13 +196,13 @@ pub fn truncate_to_width(s: &str, max_width: usize, ellipsis: &str) -> String {
 
 /// Check if a CSI code is an SGR (Select Graphic Rendition) code.
 /// SGR codes start with `\x1b[` and end with `m`.
-fn is_sgr(code: &str) -> bool {
+pub(crate) fn is_sgr(code: &str) -> bool {
     code.starts_with("\x1b[") && code.ends_with('m')
 }
 
 /// Update tracked SGR state. On `\x1b[0m` or `\x1b[m`, clears all state.
 /// On any other SGR, appends it. Non-SGR codes are ignored.
-fn update_sgr_state(state: &mut Vec<String>, code: &str) {
+pub(crate) fn update_sgr_state(state: &mut Vec<String>, code: &str) {
     if !is_sgr(code) {
         return;
     }
@@ -214,8 +214,51 @@ fn update_sgr_state(state: &mut Vec<String>, code: &str) {
 }
 
 /// Create an SGR prefix by concatenating all tracked SGR codes.
-fn sgr_prefix(state: &[String]) -> String {
+pub(crate) fn sgr_prefix(state: &[String]) -> String {
     state.concat()
+}
+
+/// Skip the first `skip` visible columns of a string, returning the remainder
+/// along with the active SGR state at that point.
+///
+/// Returns `(sgr_prefix, remaining_content)` where `sgr_prefix` contains
+/// all active ANSI SGR codes at the skip point (for re-application).
+pub fn slice_from_column(s: &str, skip: usize) -> (String, String) {
+    let bytes = s.as_bytes();
+    let mut pos = 0;
+    let mut col = 0;
+    let mut sgr_state: Vec<String> = Vec::new();
+
+    while pos < bytes.len() && col < skip {
+        if bytes[pos] == ESC {
+            if let Some((code, len)) = extract_ansi_code(s, pos) {
+                update_sgr_state(&mut sgr_state, &code);
+                pos += len;
+                continue;
+            }
+        }
+
+        let remaining = &s[pos..];
+        if let Some(grapheme) = remaining.graphemes(true).next() {
+            let w = if grapheme == "\t" { 3 } else { UnicodeWidthStr::width(grapheme) };
+            col += w;
+            pos += grapheme.len();
+        } else {
+            break;
+        }
+    }
+
+    // Also consume any ANSI codes right at the skip boundary
+    while pos < bytes.len() && bytes[pos] == ESC {
+        if let Some((code, len)) = extract_ansi_code(s, pos) {
+            update_sgr_state(&mut sgr_state, &code);
+            pos += len;
+        } else {
+            break;
+        }
+    }
+
+    (sgr_prefix(&sgr_state), s[pos..].to_string())
 }
 
 /// Word-wrap text to fit within `width` visible columns, preserving ANSI codes.
@@ -747,5 +790,68 @@ mod tests {
         // Width 1, "你" (width 2) — single char wider than allowed
         let result = wrap_text_with_ansi("你", 1);
         assert_eq!(result, vec!["你"]);
+    }
+
+    // ── slice_from_column ───────────────────────────────────────────
+
+    #[test]
+    fn slice_from_column_plain_text() {
+        let (sgr, rest) = slice_from_column("hello world", 6);
+        assert_eq!(sgr, "");
+        assert_eq!(rest, "world");
+    }
+
+    #[test]
+    fn slice_from_column_skip_zero() {
+        let (sgr, rest) = slice_from_column("hello", 0);
+        assert_eq!(sgr, "");
+        assert_eq!(rest, "hello");
+    }
+
+    #[test]
+    fn slice_from_column_skip_all() {
+        let (sgr, rest) = slice_from_column("hello", 5);
+        assert_eq!(sgr, "");
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn slice_from_column_skip_past_end() {
+        let (sgr, rest) = slice_from_column("hi", 10);
+        assert_eq!(sgr, "");
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn slice_from_column_with_ansi() {
+        // "\x1b[31mhello\x1b[0m world" — skip 5 (past "hello")
+        let (sgr, rest) = slice_from_column("\x1b[31mhello\x1b[0m world", 5);
+        // The \x1b[31m was active, then \x1b[0m reset it at the skip boundary
+        assert_eq!(sgr, "");
+        assert_eq!(rest, " world");
+    }
+
+    #[test]
+    fn slice_from_column_preserves_active_sgr() {
+        // "\x1b[31mhello world\x1b[0m" — skip 6 (past "hello ")
+        // SGR state at skip point: \x1b[31m is still active
+        let (sgr, rest) = slice_from_column("\x1b[31mhello world\x1b[0m", 6);
+        assert_eq!(sgr, "\x1b[31m");
+        assert_eq!(rest, "world\x1b[0m");
+    }
+
+    #[test]
+    fn slice_from_column_wide_chars() {
+        // "你好世界" = 8 columns, skip 4 (past "你好")
+        let (sgr, rest) = slice_from_column("你好世界", 4);
+        assert_eq!(sgr, "");
+        assert_eq!(rest, "世界");
+    }
+
+    #[test]
+    fn slice_from_column_empty_string() {
+        let (sgr, rest) = slice_from_column("", 5);
+        assert_eq!(sgr, "");
+        assert_eq!(rest, "");
     }
 }

@@ -32,13 +32,13 @@ The project starts with Anthropic as the sole LLM provider (Messages API with SS
 - Focus management: one component receives input at a time
 - Overlay system: modal components composited on top of base content
 - Ship basic components: Text (word-wrap), Box (padding/bg), Spacer, Input (single-line), SelectList
-- Async event loop with tokio — `select!` on terminal events + user event channel
+- Async event loop with tau-rt — manual poll loop on terminal events + user event channel
 - User event channel: `TUI<E>` provides `UnboundedSender<E>` for applications to push custom events from spawned tasks
 
 ### tau-ai
 - Unified message types: `UserMessage`, `AssistantMessage`, `ToolResultMessage` with text, thinking, image, and tool-call content blocks
 - `Provider` trait: `fn stream(model, context, options) → Stream<StreamEvent>` — async at the IO boundary only
-- Anthropic Messages API: async HTTP POST via `reqwest`, SSE parsing, posts `StreamEvent`s to a channel
+- Anthropic Messages API: async HTTP POST via `tau-http`, SSE parsing, posts `StreamEvent`s to a channel
 - Tool definitions with JSON Schema parameters (via `schemars`)
 - Usage tracking (tokens, cost)
 
@@ -76,7 +76,7 @@ The project starts with Anthropic as the sole LLM provider (Messages API with SS
 │             │ returns actions                    │
 │             ▼                                    │
 │  ┌─────────────────────────────┐                 │
-│  │  tokio::spawn async tasks   │  ← IO edges     │
+│  │  tau_iface::spawn tasks     │  ← IO edges     │
 │  │  • HTTP stream to Anthropic │    only          │
 │  │  • bash process execution   │                 │
 │  │  • file read/write          │                 │
@@ -88,7 +88,8 @@ The project starts with Anthropic as the sole LLM provider (Messages API with SS
 The `Agent` struct never awaits. It receives events, updates state, and returns `Vec<AgentAction>` describing what async work to spawn next. The caller (TUI handler) spawns the tasks.
 
 ### General
-- Minimal dependencies: `crossterm`, `unicode-width`, `unicode-segmentation`, `tokio`, `reqwest`, `serde`, `schemars`
+- Minimal dependencies: `crossterm`, `unicode-width`, `unicode-segmentation`, `tau-rt`/`tau-iface` (custom runtime), `tau-http`, `serde`, `schemars`
+- **No tokio, no reqwest, no smol, no async-io** — all async goes through `tau-rt` shared library (see Phase 2b)
 
 ## User Stories
 
@@ -424,29 +425,29 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - [x] `cargo test` passes
 - [x] `cargo check` passes
 
-### US-014: Overlay system [ ]
+### US-014: Overlay system [x]
 
 **Description:** As a developer, I need an overlay system to render modal components (like SelectList popups) on top of base content.
 
 **Acceptance Criteria:**
-- [ ] `TUI` gets overlay methods:
+- [x] `TUI` gets overlay methods:
   - `show_overlay(component, options) -> OverlayHandle`
   - `hide_overlay()` — hides topmost overlay
   - `has_overlay() -> bool`
-- [ ] `OverlayOptions` struct: `width`, `max_height`, `anchor` (Center, TopLeft, BottomLeft, etc.), `offset_x`, `offset_y`
-- [ ] `OverlayHandle` with `hide()` and `set_hidden(bool)`
-- [ ] Overlay compositing in `render()`:
+- [x] `OverlayOptions` struct: `width`, `max_height`, `anchor` (Center, TopLeft, BottomLeft, etc.), `offset_x`, `offset_y`
+- [x] `OverlayHandle` with `hide()` and `set_hidden(bool)`
+- [x] Overlay compositing in `render()`:
   - Renders base content first
   - For each visible overlay: renders at its configured width, composites onto base lines at calculated row/col position
   - Compositing: splice overlay content into base line at column offset (slice before + overlay + slice after)
-- [ ] Focus saves/restores: showing overlay saves current focus, hiding restores it
-- [ ] Overlay stack: multiple overlays, topmost gets input
-- [ ] Tests:
+- [x] Focus saves/restores: showing overlay saves current focus, hiding restores it
+- [x] Overlay stack: multiple overlays, topmost gets input
+- [x] Tests:
   - Single overlay composited at correct position
   - Overlay hide restores focus
   - Overlay stack: topmost gets input
-- [ ] `cargo test` passes
-- [ ] `cargo check` passes
+- [x] `cargo test` passes
+- [x] `cargo check` passes
 
 ### US-REVIEW-PHASE2: Review components and overlays (US-009 through US-014) [ ]
 
@@ -478,9 +479,10 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 **Description:** As a developer, I want a working example app that demonstrates all components and async user events so I can verify everything works together.
 
 **Acceptance Criteria:**
-- [ ] `examples/demo.rs` with a runnable app using `#[tokio::main]`
+- [ ] `examples/demo.rs` with a runnable app using `tau_iface::block_on`
+  (initially may use `#[tokio::main]` — migrated to tau-rt in US-RT-006)
 - [ ] Shows: Text with styled content, Box with background, Input that echoes typed text
-- [ ] Demonstrates user events: spawns a `tokio::spawn` task that sends a timer event every second via `event_tx`, updating a counter in the UI
+- [ ] Demonstrates user events: spawns a task (via `tau_iface::spawn` after migration) that sends a timer event every second via `event_tx`, updating a counter in the UI
 - [ ] SelectList overlay triggered by a key (e.g., Ctrl+P)
 - [ ] Quit with Ctrl+C or Escape (when no overlay)
 - [ ] Demonstrates focus switching between Input and SelectList
@@ -492,7 +494,8 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 **Description:** As a developer, I want a load test that plays a DOOM GIF as ANSI-colored block art through the TUI, measuring rendering performance to verify the differential rendering engine is fast enough for real-world use.
 
 **Acceptance Criteria:**
-- [ ] `examples/loadtest.rs` using `#[tokio::main]`
+- [ ] `examples/loadtest.rs` using `tau_iface::block_on`
+  (initially may use `#[tokio::main]` — migrated to tau-rt in US-RT-006)
 - [ ] Add dev-dependencies: `image = "0.25"` (GIF decoding + frame extraction)
 - [ ] Accepts a GIF file path as CLI argument: `cargo run --example loadtest -- doom.gif`
 - [ ] GIF frame → ANSI conversion:
@@ -501,7 +504,7 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
   - Convert each pixel pair (top + bottom) to a `▀` (upper half block) character with truecolor ANSI: `\x1b[38;2;R;G;Bm\x1b[48;2;R;G;Bm▀` — packs 2 vertical pixels per cell
   - Each frame becomes a `Vec<String>` of these colored lines
 - [ ] Playback loop using `event_tx` channel:
-  - Spawns a tokio task that sends `Frame(usize)` events at the GIF's native frame delay (or 30fps if unspecified)
+  - Spawns a task that sends `Frame(usize)` events at the GIF's native frame delay (or 30fps if unspecified)
   - Handler updates a `Text`-like component with the current frame's pre-rendered lines
   - TUI differential rendering picks up the changes
 - [ ] Performance measurement:
@@ -516,6 +519,280 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 
 ---
 
+## Phase 2b: tau-rt — Shared Async Runtime
+
+> **Design reference:** `TAU-RT-DESIGN.md`
+>
+> tau-rt is a custom single-threaded async runtime compiled as a **cdylib only**
+> (`libtau_rt.so` / `libtau_rt.dylib`). Both the host binary and future extension
+> cdylibs link against it dynamically, sharing one reactor and executor instance.
+> This eliminates tokio and all foreign runtimes from the project.
+>
+> **No crate in the workspace may depend on tokio, async-io, smol, async-std, or reqwest.**
+> HTTP is built from TCP + TLS + httparse in `tau-http`.
+
+### US-RT-001: tau-rt cdylib with reactor and executor [ ]
+
+**Description:** As a developer, I need the core shared runtime library that owns
+the reactor (IO polling + timers) and a single-threaded task executor, exposed
+entirely through C ABI.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-rt/Cargo.toml`:
+  ```toml
+  [lib]
+  crate-type = ["cdylib"]  # ONLY cdylib. No rlib.
+  
+  [dependencies]
+  polling = "3"
+  async-task = "4"
+  async-ffi = "0.5"
+  slab = "0.4"
+  concurrent-queue = "2"
+  ```
+- [ ] `crates/tau-rt/src/lib.rs` — re-exports C ABI functions only
+- [ ] **Reactor** (`src/reactor.rs`):
+  - Global `OnceLock<Reactor>` singleton (inside this .so only)
+  - `Reactor` struct: `polling::Poller`, `Mutex<Slab<Arc<Source>>>` for IO sources,
+    `Mutex<BTreeMap<(Instant, u64), Waker>>` for timers, `Mutex<Events>` for polling buffer
+  - `react(timeout: Option<Duration>)`: process expired timers → poll OS → wake ready tasks
+  - IO and timers share the same wake behavior: store waker on register, fire waker on ready
+- [ ] **Executor** (`src/executor.rs`):
+  - Task queue backed by `ConcurrentQueue<Runnable>` (from `async-task`)
+  - `spawn(FfiFuture<()>)`: wraps in `async-task::spawn_local`, pushes `Runnable` to queue
+  - `try_tick() -> bool`: pops one `Runnable`, polls it, returns whether work was done
+  - `block_on(FfiFuture<()>)`: loop { try_tick(); react(timeout); } until future completes
+- [ ] **C ABI exports** (`src/ffi.rs`) — all `#[no_mangle] pub extern "C"`:
+  - `tau_rt_io_register(fd: i32) -> u64`
+  - `tau_rt_io_deregister(handle: u64)`
+  - `tau_rt_io_poll_readable(handle: u64, cx: *mut FfiContext) -> u8` (0=Pending, 1=Ready)
+  - `tau_rt_io_poll_writable(handle: u64, cx: *mut FfiContext) -> u8`
+  - `tau_rt_timer_create(nanos_from_now: u64) -> u64`
+  - `tau_rt_timer_cancel(handle: u64)`
+  - `tau_rt_timer_poll(handle: u64, cx: *mut FfiContext) -> u8`
+  - `tau_rt_spawn(future: FfiFuture<()>)`
+  - `tau_rt_try_tick() -> u8` (0=no work, 1=did work)
+  - `tau_rt_react(timeout_ms: u64) -> i32` (0=ok, -1=error)
+  - `tau_rt_block_on(future: FfiFuture<()>)`
+- [ ] `cargo build -p tau-rt` produces `libtau_rt.dylib` / `libtau_rt.so`
+- [ ] No dependency on tokio, async-io, smol, async-std, reqwest
+
+**Design Verification (DV-1):**
+- [ ] Unit test inside tau-rt: spawn a future that increments an `AtomicU64`, call `try_tick()`,
+  assert counter incremented. Timer test: create timer 50ms, call `react()` in loop, assert
+  future completes within 55ms.
+
+### US-RT-002: tau-iface safe wrapper crate [ ]
+
+**Description:** As a developer, I need a pure-declaration crate that provides safe
+Rust wrappers around the tau-rt C ABI, so all other crates and extensions use
+idiomatic Rust async/await.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-iface/Cargo.toml`:
+  ```toml
+  [dependencies]
+  async-ffi = "0.5"
+  
+  # NO dependency on tau-rt. Linked at load time via #[link(name = "tau_rt")]
+  ```
+- [ ] `crates/tau-iface/src/ffi.rs`:
+  - `#[link(name = "tau_rt")]` extern "C" block declaring every `tau_rt_*` function
+  - Mirrors tau-rt's exports exactly
+- [ ] `crates/tau-iface/src/async_fd.rs` — `AsyncFd` struct:
+  - `new(fd: RawFd) -> io::Result<Self>` — calls `tau_rt_io_register`
+  - `async fn readable(&self) -> io::Result<()>` — polls via `tau_rt_io_poll_readable`
+  - `async fn writable(&self) -> io::Result<()>` — polls via `tau_rt_io_poll_writable`
+  - `Drop` calls `tau_rt_io_deregister`
+- [ ] `crates/tau-iface/src/timer.rs` — `Timer` struct:
+  - `after(duration: Duration) -> Self` — calls `tau_rt_timer_create`
+  - `impl Future for Timer` — polls via `tau_rt_timer_poll`
+  - `Drop` calls `tau_rt_timer_cancel`
+- [ ] `crates/tau-iface/src/tcp.rs` — `TcpStream` and `TcpListener`:
+  - `TcpStream::connect(addr) -> io::Result<Self>` — non-blocking socket + `AsyncFd`, await writable for connect completion
+  - `async fn read(&self, buf) -> io::Result<usize>` — await readable, then `recv()`
+  - `async fn write(&self, buf) -> io::Result<usize>` — await writable, then `send()`
+  - `TcpListener::bind(addr)` + `async fn accept()`
+- [ ] `crates/tau-iface/src/udp.rs` — `UdpSocket`:
+  - `bind(addr) -> io::Result<Self>` — non-blocking socket + `AsyncFd`
+  - `async fn send_to(&self, buf, addr) -> io::Result<usize>`
+  - `async fn recv_from(&self, buf) -> io::Result<(usize, SocketAddr)>`
+  - `connect(addr)` + `async fn send()` / `async fn recv()` for connected mode
+- [ ] `crates/tau-iface/src/lib.rs` — re-exports + convenience:
+  - `pub fn spawn(future)` — wraps in `FfiFuture`, calls `tau_rt_spawn`
+  - `pub async fn sleep(duration)` — `Timer::after(duration).await`
+  - `pub fn block_on(future)` — wraps in `FfiFuture`, calls `tau_rt_block_on`
+  - `pub fn try_tick() -> bool` — calls `tau_rt_try_tick`
+  - `pub fn react(timeout) -> io::Result<()>` — calls `tau_rt_react`
+- [ ] No statics, no globals, no thread-locals anywhere in this crate
+- [ ] `cargo check -p tau-iface` passes (link errors are expected without tau-rt.so present;
+  the real test is in US-RT-003)
+
+### US-RT-002b: Vendor async crates with tau-rt backend feature [ ]
+
+**Description:** Vendor `async-io`, `async-executor`, and dependencies as git submodules.
+Patch them to add a `tau-rt` feature flag that replaces their internal globals
+(reactor singleton, driver thread) with calls through `tau-iface` externs.
+Workspace `[patch]` section points to vendored copies. PRs upstream come later.
+
+**Acceptance Criteria:**
+- [ ] Git submodules under `vendor/` for the async ecosystem crates and key
+  dependencies that touch the runtime: `async-io`, `async-executor`, `polling`,
+  `crossterm`, HTTP client crate (e.g. `async-h1`, `isahc`, or `httparse`+`async-net`),
+  `rustls`/TLS if needed
+- [ ] Each vendored crate gets a `tau-rt` cargo feature. When enabled, internal
+  globals (reactor, driver threads, runtime detection) are replaced by
+  `tau-iface` calls
+- [ ] Workspace `[patch.crates-io]` maps to vendored paths
+- [ ] Ecosystem crates built on these (e.g. crossterm `event-stream`, HTTP
+  streaming) work transparently with the shared runtime
+- [ ] `cargo check --workspace` passes with vendored deps
+- [ ] No upstream PRs required at this stage — just local patches
+
+### US-RT-003: Integration test — host and plugin share reactor [ ]
+
+**Description:** Verify that the shared runtime architecture works end-to-end: a host
+binary and a plugin cdylib both link `libtau_rt.so` and share the same reactor,
+executor, and timer heap.
+
+**Acceptance Criteria:**
+- [ ] `tests/rt-integration/` directory with:
+  - `host/` — binary crate depending on `tau-iface`
+  - `plugin/` — cdylib crate depending on `tau-iface`
+  - `run_test.sh` — builds tau-rt, plugin, host; runs host with correct library path
+- [ ] **Shared counter test:** host increments via tau-rt, loads plugin, plugin increments,
+  host reads final value — counter is consistent (DV-1 from design doc)
+- [ ] **Shared reactor IO test (DV-2):** host opens a TCP listener on localhost. Plugin
+  connects via `tau_iface::TcpStream`. Host accepts, writes "hello". Plugin reads it.
+  All IO goes through the single shared reactor.
+- [ ] **Shared timer test (DV-3):** host spawns a task that sleeps 50ms and records timestamp.
+  Plugin spawns a task that sleeps 100ms and records timestamp. Host drives reactor.
+  Both timers fire at correct times (±10ms tolerance). Timestamps collected through
+  a shared `AtomicU64` or C ABI callback.
+- [ ] **FfiFuture round-trip (DV-4):** plugin exports `extern "C" fn plugin_task() -> FfiFuture<u64>`
+  that does async TCP connect + read + returns byte count. Host spawns it, drives executor,
+  receives the result.
+- [ ] `run_test.sh` exits 0 on success, non-zero with clear error on failure
+
+### US-RT-004: Dependency enforcement and forbidden-dep check [ ]
+
+**Description:** As a developer, I need build-time enforcement that no crate in the
+workspace (and no future extension) accidentally depends on tokio or other
+foreign async runtimes.
+
+**Acceptance Criteria:**
+- [ ] `ci/check-deps.sh` script:
+  ```bash
+  FORBIDDEN="tokio async-io smol async-std async-global-executor reqwest hyper"
+  ```
+  Runs `cargo tree` for each workspace member, fails if any forbidden crate appears
+  in the dependency tree
+- [ ] Workspace root `Cargo.toml` does NOT list tokio, reqwest, or any forbidden dep
+  in `[workspace.dependencies]`
+- [ ] `crates/tau-iface/build.rs` — compile-time check:
+  - Scans `cargo metadata` (via `CARGO_MANIFEST_DIR`) or `DEP_` env vars
+  - `panic!()` with clear message if a forbidden dependency is detected
+  - Message: `"FORBIDDEN DEPENDENCY: 'tokio' detected. Use tau-iface for async, not tokio."`
+- [ ] **DV-5 test:** create a throwaway crate that depends on `tau-iface` + `tokio`.
+  `cargo check` must fail with the forbidden-dependency error. Verify the error message
+  is clear and actionable.
+- [ ] Document the rule in workspace README: *"No foreign runtimes. Use `tau_iface::spawn`,
+  `tau_iface::sleep`, `tau_iface::TcpStream`. See TAU-RT-DESIGN.md."*
+
+### US-RT-005: tau-http — HTTP/1.1 client on tau-rt primitives [ ]
+
+**Description:** As a developer, I need an HTTP/1.1 client built entirely on tau-iface
+(TCP + timers) so the AI layer can stream from the Anthropic API without reqwest or tokio.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-http/Cargo.toml`:
+  ```toml
+  [dependencies]
+  tau-iface = { path = "../tau-iface" }
+  httparse = "1"
+  rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+  webpki-roots = "0.26"
+  ```
+- [ ] `crates/tau-http/src/client.rs`:
+  - `HttpClient::new() -> Self` (reusable, holds rustls `ClientConfig`)
+  - `async fn request(method, url, headers, body) -> Result<HttpResponse>`
+  - Opens `tau_iface::TcpStream`, wraps in `rustls::StreamOwned` for HTTPS
+  - Sends request manually (method + headers + body)
+  - Parses response status + headers via `httparse`
+  - Supports `Transfer-Encoding: chunked` (required for SSE)
+- [ ] `crates/tau-http/src/sse.rs` — SSE streaming:
+  - `HttpResponse::sse_stream() -> impl Stream<Item = SseEvent>`
+  - Parses `event:`, `data:`, empty-line-delimited events
+  - `SseEvent { event: Option<String>, data: String }`
+- [ ] `crates/tau-http/src/lib.rs` — convenience:
+  - `pub async fn get(url, headers) -> Result<HttpResponse>`
+  - `pub async fn post(url, headers, body) -> Result<HttpResponse>`
+- [ ] Timeout support via `tau_iface::Timer` — configurable connect and read timeouts
+- [ ] No dependency on tokio, reqwest, hyper, async-io
+- [ ] Integration test: `POST` to `https://httpbin.org/post` with JSON body,
+  verify 200 response and echoed body (requires network; mark `#[ignore]` for CI)
+
+### US-RT-006: Migrate tau-tui event loop from tokio to tau-rt [ ]
+
+**Description:** As a developer, I need to replace all tokio usage in tau-tui with
+tau-iface so the TUI crate uses the shared runtime.
+
+**Acceptance Criteria:**
+- [ ] Remove `tokio` and `futures` from `crates/tau-tui/Cargo.toml`
+- [ ] Add `tau-iface = { path = "../tau-iface" }` dependency
+- [ ] Replace `tokio::sync::mpsc` with `std::sync::mpsc` (sync channel is fine — the
+  event loop polls it non-blockingly each tick)
+- [ ] Replace `tokio::select!` event loop with manual poll loop:
+  ```rust
+  // Pseudocode
+  loop {
+      // Check stdin for key events (via AsyncFd on stdin fd)
+      if let Some(key) = poll_stdin()? { handle_key(key); }
+      // Check user event channel
+      while let Ok(ev) = user_rx.try_recv() { handle_user_event(ev); }
+      // Render if dirty
+      if dirty { tui.render(); }
+      // Drive reactor (IO + timers, with short timeout)
+      tau_iface::react(Some(Duration::from_millis(16)))?;
+      // Drive executor (poll spawned tasks)
+      while tau_iface::try_tick() {}
+  }
+  ```
+- [ ] `event_tx()` returns `std::sync::mpsc::Sender<E>` — still cloneable, still
+  usable from `tau_iface::spawn`ed tasks
+- [ ] stdin reading via `AsyncFd` wrapping `RawFd` 0 (stdin) + crossterm's
+  `crossterm::event::read()` or raw byte parsing
+- [ ] All existing tau-tui tests pass: `cargo test -p tau-tui`
+  (tests link against `libtau_rt` at test time)
+- [ ] US-015 demo and US-016 loadtest updated: replace `#[tokio::main]` with
+  `tau_iface::block_on(async { ... })`, replace `tokio::spawn` with `tau_iface::spawn`
+- [ ] `cargo check -p tau-tui` passes
+- [ ] `ci/check-deps.sh` passes (no tokio in tree)
+
+### US-REVIEW-PHASE2B: Review tau-rt foundation (US-RT-001 through US-RT-006) [ ]
+
+**Description:** Review the shared runtime, interface crate, HTTP client, and TUI
+migration as a cohesive layer before building the AI and agent layers on top.
+
+**Acceptance Criteria:**
+- [ ] Identify phase scope: US-RT-001 to US-RT-006
+- [ ] Review all tau-rt C ABI exports — are they sufficient for the AI/agent layers?
+  Will `tau-http` SSE streaming work for Anthropic? Is `AsyncFd` + stdin adequate for TUI?
+- [ ] Run integration test from US-RT-003 — all DV checks pass
+- [ ] Run `ci/check-deps.sh` — no forbidden dependencies anywhere
+- [ ] Verify `cargo test --workspace` passes with `libtau_rt` on library path
+- [ ] Check that `libtau_rt.dylib`/`.so` is the only dynamic Rust dependency
+  (everything else is statically linked)
+- [ ] Evaluate: is the C ABI surface minimal? Can any exports be removed or combined?
+- [ ] If issues found:
+  - Insert fix tasks (US-RT-XXXa, etc.)
+  - Append findings to progress.txt
+- [ ] If no issues:
+  - Append "## Phase 2b review PASSED" to progress.txt
+  - Mark this review task [x]
+
+---
+
 ## Phase 3: Workspace + tau-ai
 
 ### US-017: Convert to Cargo workspace [ ]
@@ -523,7 +800,6 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 **Description:** As a developer, I need to restructure the project as a Cargo workspace so each layer is a separate crate.
 
 **Acceptance Criteria:**
-- [ ] Move `~/rtui` to `~/tau`
 - [ ] Root `~/tau/Cargo.toml` is a workspace:
   ```toml
   [workspace]
@@ -531,15 +807,16 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
   resolver = "2"
   
   [workspace.dependencies]
-  tokio = { version = "1", features = ["rt", "macros", "sync", "process", "io-util"] }
-  futures = "0.3"
+  tau-iface = { path = "crates/tau-iface" }
   serde = { version = "1", features = ["derive"] }
   serde_json = "1"
+  async-ffi = "0.5"
   ```
-- [ ] Move existing TUI code to `crates/tau-tui/` with its own `Cargo.toml` referencing workspace deps
+- [ ] Workspace contains: `tau-rt`, `tau-iface`, `tau-http`, `tau-tui`, `tau-ai`, `tau-agent`, `tau-cli`
 - [ ] Create empty crate stubs: `crates/tau-ai/`, `crates/tau-agent/`, `crates/tau-cli/`
 - [ ] All existing TUI tests still pass: `cargo test -p tau-tui`
-- [ ] `cargo check --workspace` passes
+- [ ] `cargo check --workspace` passes (except tau-rt which builds separately)
+- [ ] No tokio, reqwest, or forbidden deps in `[workspace.dependencies]`
 
 ### US-018: tau-ai core message types [ ]
 
@@ -649,13 +926,13 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 **Description:** As a developer, I need the Anthropic provider that streams responses via SSE from the Messages API.
 
 **Acceptance Criteria:**
-- [ ] Add `reqwest = { version = "0.12", features = ["stream"] }` to tau-ai
+- [ ] Add `tau-http = { path = "../tau-http" }` to tau-ai (NOT reqwest)
 - [ ] `crates/tau-ai/src/providers/anthropic.rs` implementing `Provider`:
-  - POST to `https://api.anthropic.com/v1/messages` with `stream: true`
+  - `tau_http::post()` to `https://api.anthropic.com/v1/messages` with `stream: true`
   - Headers: `x-api-key`, `anthropic-version: 2023-06-01`, `content-type: application/json`
   - Convert `Context` → Anthropic request body (messages, system, tools, max_tokens)
   - Anthropic tool parameters: convert `RootSchema` to Anthropic's `input_schema` format
-- [ ] SSE parser: read response body as byte stream, parse `event:` + `data:` lines:
+- [ ] SSE parser via `tau_http::HttpResponse::sse_stream()`, parse events:
   - `message_start` → `StreamEvent::MessageStart`
   - `content_block_start` → `StreamEvent::ContentBlockStart`
   - `content_block_delta` with `text_delta` → `StreamEvent::TextDelta`
@@ -853,8 +1130,8 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
       tx: UnboundedSender<AgentEvent>,
   )
   ```
-  - `StreamLlm`: spawns `tokio::spawn` that calls `provider.stream()`, forwards each `StreamEvent` as `AgentEvent` via `tx`
-  - `ExecuteTool`: finds tool by name, spawns `tokio::spawn` that calls `tool.execute()`, sends `ToolEnd` via `tx`
+  - `StreamLlm`: `tau_iface::spawn` that calls `provider.stream()`, forwards each `StreamEvent` as `AgentEvent` via `tx`
+  - `ExecuteTool`: finds tool by name, `tau_iface::spawn` that calls `tool.execute()`, sends `ToolEnd` via `tx`
   - `Done`: sends `AgentDone` via `tx`
 - [ ] Handles panics/errors in spawned tasks: catches and sends `AgentError` via `tx`
 - [ ] Tests: mock provider + mock tool, verify events arrive on channel
@@ -913,7 +1190,8 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 **Acceptance Criteria:**
 - [ ] `crates/tau-cli/src/tools/bash.rs` implementing `AgentTool`:
   - Parameters: `command: String`, `timeout: Option<u64>` (seconds)
-  - Spawns `tokio::process::Command` with `bash -c` (or `sh -c`)
+  - Spawns `std::process::Command` with `bash -c` (or `sh -c`), wraps child stdout/stderr
+    fds in `tau_iface::AsyncFd` for non-blocking read
   - Captures stdout + stderr combined
   - Truncates output to 50KB / 2000 lines
   - Returns exit code in output: `"Exit code: N\n<output>"`
@@ -960,7 +1238,7 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
   - Describes available tools (read, write, edit, bash)
   - Sets coding assistant persona
   - Instructions for tool use (read before edit, verify after changes)
-- [ ] `crates/tau-cli/src/main.rs` with `#[tokio::main]`:
+- [ ] `crates/tau-cli/src/main.rs` with `fn main()` calling `tau_iface::block_on(...)`:
   - Reads `ANTHROPIC_API_KEY` from env (error if missing)
   - CLI args: `tau [prompt]` or `echo "prompt" | tau` (stdin)
   - If prompt provided: creates `Agent`, sets up tools, calls `prompt()`, runs event loop printing to stdout (no TUI), exits when done
@@ -1032,17 +1310,18 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - **No multi-provider support yet** — Anthropic only (Provider trait is extensible for later)
 - **No session persistence** — no saving/loading conversation history
 - **No model discovery/registry** — hardcoded model string for now
-- **No extensions/plugins** — extensibility is at the Rust trait level only (runtime extensions deferred)
+- **No extensions/plugins in v1** — the shared runtime (`tau-rt`) is designed to support cdylib extensions in the future, but the extension loading/API is not in v1 scope. Extensibility via Rust traits only for now. See `TAU-RT-DESIGN.md` and `EXTENSIONS.md`.
 
 ## Technical Considerations
 
 - **Ownership model:** Components are stored as `Box<dyn Component>` in containers. Focus is tracked by raw pointer or index, not borrow (avoids lifetime hell). Consider `&mut` access patterns carefully — the `run` handler receives `&mut TUI<E>` to allow mutation.
 - **Generic user events:** `TUI<E>` is generic over user event type. Components don't know about `E` — they only implement `Component`. The event type only matters for the run loop and the handler closure. For apps that don't need user events, use `TUI<()>`.
-- **Async but components are sync:** The event loop is async (tokio select), but `Component::render()` and `Component::handle_input()` are synchronous. Components never await. Async work happens in spawned tasks that communicate results via `event_tx`.
+- **Async but components are sync:** The event loop is async (tau-rt reactor poll), but `Component::render()` and `Component::handle_input()` are synchronous. Components never await. Async work happens in `tau_iface::spawn`ed tasks that communicate results via `event_tx`.
 - **String-heavy rendering:** Each frame produces `Vec<String>`. This is intentional — matches pi-mono's model and keeps components simple. Optimize later if needed.
 - **Flicker-free rendering — three layers:**
   1. **Single buffered write:** Each `render()` builds one `String` with all cursor moves, line clears, and content. One `write()` + `flush()` call per frame. Never multiple writes.
   2. **Synchronized output:** Buffer wrapped in `\x1b[?2026h` / `\x1b[?2026l`. Terminals that support DEC mode 2026 hold the frame until the end marker, then paint atomically.
   3. **Differential rendering:** Only changed lines are rewritten. Cursor moves via relative ANSI escapes (`\x1b[{n}A/B`), individual lines cleared with `\x1b[2K` before rewrite. No full-screen clear unless width changed.
-- **Testing without a terminal:** Use `MockTerminal` implementing `Terminal` that captures writes to a `Vec<String>` — all rendering logic is testable without a real terminal. For event loop tests, use `tokio::sync::mpsc` channels to simulate events.
+- **Testing without a terminal:** Use `MockTerminal` implementing `Terminal` that captures writes to a `Vec<String>` — all rendering logic is testable without a real terminal. For event loop tests, use `std::sync::mpsc` channels to simulate events.
+- **Shared runtime architecture:** `libtau_rt.so`/`.dylib` is the single async runtime. Built as cdylib-only (no rlib). All crates access it through `tau-iface` extern declarations. Future extensions (cdylib plugins) also link against the same `.so`, sharing the reactor and executor. See `TAU-RT-DESIGN.md`.
 - **ANSI reset at line end:** Each rendered line gets `\x1b[0m` appended to prevent style bleeding across lines (same as pi-mono's `applyLineResets`).
