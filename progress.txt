@@ -256,3 +256,19 @@ Fix inserted as US-007a: TUI::stop() must move cursor from hardware_cursor_row t
   - Callbacks clone the SelectItem before calling to avoid borrow issues with `&mut self` (same pattern as Input).
 ## Task self-review PASSED
 ---
+
+## Iteration 10 - US-014: Overlay system
+- What was done: Implemented overlay system with compositing, focus save/restore, and overlay stack. Added `Anchor` enum (Center, TopLeft, TopRight, BottomLeft, BottomRight), `OverlayOptions` struct (width, max_height, anchor, offset_x, offset_y), `OverlayHandle` (hide/set_hidden via `Rc<Cell<bool>>`), `OverlayEntry` (internal), and TUI methods (show_overlay, hide_overlay, has_overlay). Compositing happens in render() between base rendering and differential comparison — overlays are spliced into base lines at calculated positions. Added `slice_from_column` to utils.rs with SGR state tracking. Made `is_sgr`, `update_sgr_state`, `sgr_prefix` pub(crate). Modified run() key forwarding to check overlays first (topmost visible gets input). 32 new tests (8 slice_from_column, 5 splice, 4 position, 6 TUI methods, 3 compositing, 3 focus, 3 async input forwarding). All 252 tests pass.
+- Files changed: crates/tau-tui/src/utils.rs (slice_from_column + SGR visibility), crates/tau-tui/src/tui.rs (overlay types + methods + compositing + tests), PRD.md
+- Learnings for future iterations:
+  - `Rc<Cell<bool>>` works well for shared visibility state in single-threaded TUI — TUI is already !Send due to Box<dyn Terminal>
+  - Overlay compositing inserts between base rendering and differential comparison — differential rendering then naturally handles overlay changes
+  - `splice_overlay_into_line` uses ANSI resets (\x1b[0m) as boundaries between base/overlay/base sections, and re-applies base SGR state for the "after" portion via `slice_from_column`
+  - `truncate_to_width(s, col, "")` is the "slice before" operation — existing utility, no new code needed
+  - `calculate_overlay_position` is a pure function with `saturating_sub` for all anchor types and `.max(0)` clamping for negative offsets
+  - Base content is extended with empty strings if overlay position goes beyond — clean handling without special cases
+  - Overlay stack uses Vec<OverlayEntry> with .pop() for LIFO ordering — topmost is last element, `iter_mut().rev()` for finding topmost visible
+  - Focus save/restore: each overlay entry saves `self.focused` at show time, restores on hide — nested overlays work correctly
+  - Key forwarding: overlays checked first via reverse iteration, falls through to focused component only if no visible overlays
+## Task self-review PASSED
+---

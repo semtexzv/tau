@@ -48,3 +48,13 @@
 ## Container child access
 - `Container::child_mut(index)` returns `Option<&mut Box<dyn Component>>` — NOT `&mut dyn Component` (lifetime issues with 'static trait objects)
 - Auto-deref through Box means you can call Component methods directly on the result
+
+## Overlay System (US-014)
+- Overlays composite onto base content between rendering and differential comparison — differential rendering then handles changes naturally
+- `Rc<Cell<bool>>` for shared overlay visibility (TUI is !Send, single-threaded)
+- `show_overlay()` saves focus, `hide_overlay()` pops and restores — nested overlays correctly unwind
+- Key forwarding: overlays checked first via `iter_mut().rev()`, falls through to focused component only if no visible overlays
+- `splice_overlay_into_line()` uses ANSI resets as boundaries: `before + \x1b[0m + overlay + \x1b[0m + sgr_state + after`
+- `slice_from_column()` in utils.rs returns `(sgr_prefix, remaining)` — tracks active SGR state while skipping columns
+- `truncate_to_width(s, col, "")` is the "slice before column" operation
+- SGR utilities (`is_sgr`, `update_sgr_state`, `sgr_prefix`) are `pub(crate)` in utils.rs
