@@ -92,3 +92,18 @@
   - Project is now a workspace: TUI code in crates/tau-tui/, tests via `cargo test -p tau-tui`
 ## Task self-review PASSED
 ---
+
+## Iteration 8 - US-008: Async event loop with user events
+- What was done: Implemented `Event<E>` enum (Key, Resize, User), `quit()`, focus management (`set_focus`/`focused`), and `TUI::run()` async event loop. Added `child_mut()` to Container for focus key forwarding. Added `crossterm_event_tx()` for injecting terminal events (testability). The run loop spawns a crossterm EventStream reader task, then `tokio::select!` on crossterm_rx and user_rx channels. Key events auto-forwarded to focused component before handler. Wrote 9 new tests (async with `#[tokio::test]`). All 109 tests pass.
+- Files changed: crates/tau-tui/src/tui.rs, crates/tau-tui/src/component.rs, PRD.md
+- Learnings for future iterations:
+  - crossterm `KeyCode::Esc` not `KeyCode::Escape` — always check crossterm API names
+  - `Container::child_mut()` returns `Option<&mut Box<dyn Component>>` not `Option<&mut dyn Component>` — returning the inner dyn ref causes lifetime issues with `'static` trait objects
+  - Crossterm EventStream works fine in tests (no real terminal): spawned reader task just blocks on stdin, test events injected via crossterm_tx channel
+  - `run()` uses `.take()` on Option receivers (consumed once) — calling run() twice panics with clear message
+  - `reader_handle.abort()` cleanly cancels the spawned crossterm reader on exit
+  - `FnMut` closures in `run()` capture by `&mut` reference — captured vars accessible after run() returns
+  - Initial `render()` called after `start()` in run() for good UX (show initial state before first event)
+  - `Event<E>` derives `Debug` which requires `E: Debug` — practical constraint, all common types satisfy it
+## Task self-review PASSED
+---

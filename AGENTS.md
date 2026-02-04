@@ -38,3 +38,13 @@
 ## Tokio Channels
 - `unbounded_channel()` can be created without runtime; only `recv()` needs async
 - `event_rx` is `Option<>` so the run loop can `.take()` it
+
+## Async Event Loop Testing
+- `crossterm_event_tx()` returns a sender for injecting terminal events in tests
+- Run loop spawns crossterm EventStream reader; in tests it just blocks on stdin (harmless)
+- `#[tokio::test]` for async run() tests; send events via spawned tasks, handler calls `quit()` to exit
+- Use `Arc<Mutex<Vec<_>>>` for components that need to share state with test assertions
+
+## Container child access
+- `Container::child_mut(index)` returns `Option<&mut Box<dyn Component>>` — NOT `&mut dyn Component` (lifetime issues with 'static trait objects)
+- Auto-deref through Box means you can call Component methods directly on the result
