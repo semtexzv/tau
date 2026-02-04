@@ -189,3 +189,13 @@ Fix inserted as US-007a: TUI::stop() must move cursor from hardware_cursor_row t
   - The hardware_cursor_row/cursor_row distinction is the most subtle part of the codebase — well documented now
   - 111 tests provide strong coverage for the foundation layer
 ---
+
+## Iteration 5 - US-009: Spacer component
+- What was done: Implemented Spacer component in src/components/spacer.rs. Struct with `lines: usize` field, `new(lines)`, `set_lines(n)`, `Default` (1 line), Component impl returning `vec![String::new(); lines]`. Registered in components/mod.rs with `pub use`. 6 tests covering: n lines, default, zero, set_lines, width-independence, object safety. All 117 tests pass.
+- Files changed: crates/tau-tui/src/components/spacer.rs (new), crates/tau-tui/src/components/mod.rs (module registration), PRD.md (criteria marked [x])
+- Learnings for future iterations:
+  - Components in `components/` dir follow pattern: mod.rs declares `pub mod X; pub use X::Type;`
+  - Spacer is the simplest possible component — good reference for the Component trait contract
+  - `vec![String::new(); n]` is idiomatic Rust for n copies of an empty string
+## Task self-review PASSED
+---

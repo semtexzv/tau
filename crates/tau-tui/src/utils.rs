@@ -194,6 +194,158 @@ pub fn truncate_to_width(s: &str, max_width: usize, ellipsis: &str) -> String {
     result
 }
 
+/// Check if a CSI code is an SGR (Select Graphic Rendition) code.
+/// SGR codes start with `\x1b[` and end with `m`.
+fn is_sgr(code: &str) -> bool {
+    code.starts_with("\x1b[") && code.ends_with('m')
+}
+
+/// Update tracked SGR state. On `\x1b[0m` or `\x1b[m`, clears all state.
+/// On any other SGR, appends it. Non-SGR codes are ignored.
+fn update_sgr_state(state: &mut Vec<String>, code: &str) {
+    if !is_sgr(code) {
+        return;
+    }
+    if code == "\x1b[0m" || code == "\x1b[m" {
+        state.clear();
+    } else {
+        state.push(code.to_string());
+    }
+}
+
+/// Create an SGR prefix by concatenating all tracked SGR codes.
+fn sgr_prefix(state: &[String]) -> String {
+    state.concat()
+}
+
+/// Word-wrap text to fit within `width` visible columns, preserving ANSI codes.
+///
+/// - Splits on word boundaries (spaces)
+/// - Breaks words longer than `width` character-by-character (grapheme-aware)
+/// - Tracks ANSI SGR state and re-applies at the start of each wrapped line
+/// - Hard line breaks (`\n`) are preserved
+///
+/// Returns empty `Vec` for empty input or zero width.
+pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
+    if text.is_empty() || width == 0 {
+        return vec![];
+    }
+
+    let mut result = Vec::new();
+    let mut sgr_state: Vec<String> = Vec::new();
+
+    for hard_line in text.split('\n') {
+        wrap_single_line(hard_line, width, &mut sgr_state, &mut result);
+    }
+
+    result
+}
+
+/// Wrap a single line (no newlines) into one or more output lines.
+fn wrap_single_line(
+    text: &str,
+    width: usize,
+    sgr_state: &mut Vec<String>,
+    out: &mut Vec<String>,
+) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+
+    let mut current_line = sgr_prefix(sgr_state);
+    let mut current_width: usize = 0;
+
+    // Break point tracking: byte position of last space in current_line
+    let mut break_pos: Option<usize> = None;
+    let mut break_width: usize = 0;
+    let mut break_sgr: Vec<String> = sgr_state.clone();
+
+    let initial_len = out.len();
+
+    while i < bytes.len() {
+        // Pass through ANSI codes
+        if bytes[i] == ESC {
+            if let Some((code, len)) = extract_ansi_code(text, i) {
+                update_sgr_state(sgr_state, &code);
+                current_line.push_str(&code);
+                i += len;
+                continue;
+            }
+        }
+
+        // Get next grapheme
+        let remaining = &text[i..];
+        let grapheme = match remaining.graphemes(true).next() {
+            Some(g) => g,
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+        let gw = if grapheme == "\t" {
+            3
+        } else {
+            UnicodeWidthStr::width(grapheme)
+        };
+        let grapheme_bytes = grapheme.len();
+
+        if grapheme == " " {
+            if current_width + 1 > width && current_width > 0 {
+                // Space doesn't fit — break here without the space
+                out.push(current_line);
+                current_line = sgr_prefix(sgr_state);
+                current_width = 0;
+                break_pos = None;
+            } else {
+                // Record as potential break point
+                break_pos = Some(current_line.len());
+                break_width = current_width;
+                break_sgr = sgr_state.clone();
+                current_line.push(' ');
+                current_width += 1;
+            }
+            i += grapheme_bytes;
+            continue;
+        }
+
+        // Non-space visible character
+        if current_width + gw > width {
+            if let Some(bp) = break_pos {
+                // Break at last space
+                let after_break = current_line[bp + 1..].to_string();
+                current_line.truncate(bp);
+                out.push(current_line);
+
+                let prefix = sgr_prefix(&break_sgr);
+                current_line = format!("{}{}", prefix, after_break);
+                current_width = current_width - break_width - 1;
+                break_pos = None;
+            } else if current_width == 0 {
+                // Single grapheme wider than width — put it alone
+                current_line.push_str(grapheme);
+                out.push(current_line);
+                current_line = sgr_prefix(sgr_state);
+                i += grapheme_bytes;
+                continue;
+            } else {
+                // No break point — mid-word break
+                out.push(current_line);
+                current_line = sgr_prefix(sgr_state);
+                current_width = 0;
+                break_pos = None;
+            }
+        }
+
+        current_line.push_str(grapheme);
+        current_width += gw;
+        i += grapheme_bytes;
+    }
+
+    // Push final line if it has content, or if nothing was pushed (empty hard line)
+    if current_width > 0 || out.len() == initial_len {
+        out.push(current_line);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,5 +613,139 @@ mod tests {
     #[test]
     fn truncate_empty_string() {
         assert_eq!(truncate_to_width("", 5, "..."), "");
+    }
+
+    // ── wrap_text_with_ansi ─────────────────────────────────────────
+
+    #[test]
+    fn wrap_empty_text() {
+        assert_eq!(wrap_text_with_ansi("", 80), Vec::<String>::new());
+    }
+
+    #[test]
+    fn wrap_zero_width() {
+        assert_eq!(wrap_text_with_ansi("hello", 0), Vec::<String>::new());
+    }
+
+    #[test]
+    fn wrap_short_text_no_wrap() {
+        assert_eq!(wrap_text_with_ansi("hello", 80), vec!["hello"]);
+    }
+
+    #[test]
+    fn wrap_at_word_boundary() {
+        assert_eq!(
+            wrap_text_with_ansi("hello world", 7),
+            vec!["hello", "world"]
+        );
+    }
+
+    #[test]
+    fn wrap_exact_fit_no_wrap() {
+        assert_eq!(
+            wrap_text_with_ansi("hello", 5),
+            vec!["hello"]
+        );
+    }
+
+    #[test]
+    fn wrap_multiple_words() {
+        assert_eq!(
+            wrap_text_with_ansi("the quick brown fox", 10),
+            vec!["the quick", "brown fox"]
+        );
+    }
+
+    #[test]
+    fn wrap_long_word_char_by_char() {
+        assert_eq!(
+            wrap_text_with_ansi("abcdefgh", 5),
+            vec!["abcde", "fgh"]
+        );
+    }
+
+    #[test]
+    fn wrap_long_word_multiple_breaks() {
+        assert_eq!(
+            wrap_text_with_ansi("abcdefghi", 3),
+            vec!["abc", "def", "ghi"]
+        );
+    }
+
+    #[test]
+    fn wrap_ansi_style_preserved_across_lines() {
+        let input = "\x1b[31mhello world\x1b[0m";
+        let result = wrap_text_with_ansi(input, 7);
+        // Line 1: red "hello", line 2: red carried over + "world" + reset
+        assert_eq!(result, vec!["\x1b[31mhello", "\x1b[31mworld\x1b[0m"]);
+    }
+
+    #[test]
+    fn wrap_ansi_style_changes_mid_text() {
+        let input = "\x1b[31mhello \x1b[32mworld\x1b[0m";
+        let result = wrap_text_with_ansi(input, 7);
+        // Line 1: red "hello ", line 2 gets red prefix + green override + "world" + reset
+        assert_eq!(
+            result,
+            vec!["\x1b[31mhello", "\x1b[31m\x1b[32mworld\x1b[0m"]
+        );
+    }
+
+    #[test]
+    fn wrap_preserves_hard_newlines() {
+        assert_eq!(
+            wrap_text_with_ansi("hello\nworld", 80),
+            vec!["hello", "world"]
+        );
+    }
+
+    #[test]
+    fn wrap_hard_newline_with_empty_line() {
+        assert_eq!(
+            wrap_text_with_ansi("hello\n\nworld", 80),
+            vec!["hello", "", "world"]
+        );
+    }
+
+    #[test]
+    fn wrap_wide_chars() {
+        // "你好世界" = 8 visible columns, wrap at 5
+        assert_eq!(
+            wrap_text_with_ansi("你好世界", 5),
+            vec!["你好", "世界"]
+        );
+    }
+
+    #[test]
+    fn wrap_wide_char_doesnt_split() {
+        // Width 3: "你" (2) fits, "好" (2) would make 4 > 3, so break
+        assert_eq!(
+            wrap_text_with_ansi("你好", 3),
+            vec!["你", "好"]
+        );
+    }
+
+    #[test]
+    fn wrap_sgr_state_across_hard_newlines() {
+        let input = "\x1b[31mhello\nworld\x1b[0m";
+        let result = wrap_text_with_ansi(input, 80);
+        // SGR state carries across hard newlines
+        assert_eq!(result, vec!["\x1b[31mhello", "\x1b[31mworld\x1b[0m"]);
+    }
+
+    #[test]
+    fn wrap_word_with_trailing_space_at_width() {
+        // "hello world" at width 5: 'hello' fills, space overflows
+        assert_eq!(
+            wrap_text_with_ansi("hello world", 5),
+            vec!["hello", "world"]
+        );
+    }
+
+    #[test]
+    fn wrap_single_wide_char_wider_than_width() {
+        // Width 1, "你" (width 2) — single char wider than allowed
+        let result = wrap_text_with_ansi("你", 1);
+        assert_eq!(result, vec!["你"]);
     }
 }
