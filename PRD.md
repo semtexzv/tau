@@ -318,18 +318,18 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
   - Mark this review task [x]
   - Commit: "docs: phase 1 review complete"
 
-### US-009: Spacer component [ ]
+### US-009: Spacer component [x]
 
 **Description:** As a developer, I want a Spacer component that renders N empty lines for vertical spacing.
 
 **Acceptance Criteria:**
-- [ ] `Spacer` struct in `src/components/spacer.rs` implementing `Component`
-- [ ] Constructor takes `lines: usize` (default 1)
-- [ ] `render()` returns `lines` empty strings
-- [ ] `set_lines(n)` to update count
-- [ ] Tests: `Spacer::new(3).render(80)` returns 3 empty strings
-- [ ] `cargo test` passes
-- [ ] `cargo check` passes
+- [x] `Spacer` struct in `src/components/spacer.rs` implementing `Component`
+- [x] Constructor takes `lines: usize` (default 1)
+- [x] `render()` returns `lines` empty strings
+- [x] `set_lines(n)` to update count
+- [x] Tests: `Spacer::new(3).render(80)` returns 3 empty strings
+- [x] `cargo test` passes
+- [x] `cargo check` passes
 
 ### US-010: Text component with word wrapping [ ]
 
