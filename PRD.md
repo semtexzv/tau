@@ -276,6 +276,17 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - [x] `cargo test` passes
 - [x] `cargo check` passes
 
+### US-007a: Fix cursor repositioning on TUI stop [x]
+
+**Description:** After differential rendering, `hardware_cursor_row` may be in the middle of content (not at the end). `TUI::stop()` must move the cursor past all content before restoring the terminal, otherwise the shell prompt appears mid-output.
+
+**Acceptance Criteria:**
+- [x] `TUI::stop()` emits `\x1b[{n}B` to move cursor from `hardware_cursor_row` to `cursor_row` (end of content) before calling `terminal.stop()`, but only when `hardware_cursor_row < cursor_row`
+- [x] Test: render 5 lines, differential-update line 1 only (hardware_cursor_row=2, cursor_row=5), call stop(), verify output contains cursor-down to row 5
+- [x] Test: render where hardware_cursor_row == cursor_row (e.g. first render or full redraw) — stop() emits no cursor movement
+- [x] `cargo test -p tau-tui` passes
+- [x] `cargo check` passes
+
 ### US-REVIEW-PHASE1: Review foundation (US-001 through US-008) [ ]
 
 **Description:** Review the foundation layer as a cohesive system.

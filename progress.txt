@@ -107,3 +107,43 @@
   - `Event<E>` derives `Debug` which requires `E: Debug` — practical constraint, all common types satisfy it
 ## Task self-review PASSED
 ---
+
+## Iteration 2 - US-REVIEW-PHASE1: Review foundation (US-001 through US-008)
+- What was done: Full review of all 6 source files across US-001 through US-008 (terminal.rs, utils.rs, component.rs, tui.rs, components/mod.rs, lib.rs). All 109 tests pass. Evaluated simplicity, correctness, edge cases, data structures, error handling. Performed cross-task analysis.
+- Files changed: PRD.md (inserted fix task US-007a), progress.txt (this entry)
+
+### Per-task findings:
+- US-001 (scaffolding): PASS. Clean. One PRD [ ] for dev-dep image is correctly deferred to US-016.
+- US-002 (Terminal trait): PASS. Minimal, object-safe. as_any pattern well documented.
+- US-003 (ANSI utils): PASS. Correct CSI/OSC/APC handling. Good edge case coverage.
+- US-004 (visible_width): PASS. Correct. Tab=3, grapheme-aware truncation, ANSI passthrough.
+- US-005 (Component/Container): PASS. Minimal trait, clean composition. child_mut returns Box correctly.
+- US-006 (TUI engine): PASS. Single buffer write, sync markers, reset suffixes. Event channel pattern clean.
+- US-007 (Differential rendering): BUG FOUND — see below.
+- US-008 (Async event loop): PASS. Clean select!, focus forwarding, quit handling.
+
+### Bug found — cursor position on stop():
+After differential rendering, hardware_cursor_row is set to last_changed + 1, which may be in the middle of content (not at cursor_row = lines.len()). When TUI::stop() is called (e.g., at end of run()), it delegates directly to terminal.stop() without repositioning the cursor. In the scrolling model, this means the shell prompt appears in the middle of the TUI's output.
+
+Example: 5 lines, update line 1 only → hardware_cursor_row=2, cursor_row=5. After stop(), cursor is at row 2. Shell prompt overlays lines 2-4.
+
+Fix inserted as US-007a: TUI::stop() must move cursor from hardware_cursor_row to cursor_row before calling terminal.stop().
+
+### Cross-task analysis:
+- Component trait: Ergonomic, not fighting ownership. Only render() required.
+- Terminal trait: Minimal. Event reading outside trait works cleanly.
+- Differential rendering math: Correct for all three paths. Only issue is stop() cursor.
+- visible_width: Not yet needed in rendering engine (components pad their own output). Will be used by Text/Box.
+- Async event loop: Channel closed handled. EventStream reader aborted on exit.
+- Focus management: Clean integration. Index-based focus is pragmatic.
+- TUI<E> generic: E: Send + 'static only. Components unaware of E. TUI<()> works.
+- No duplication found across tasks.
+- Naming/style consistent throughout.
+- Data flows (Terminal→TUI→Container→Component, events→channels→select→handler) are clean and unidirectional.
+
+### Review result: ISSUES FOUND (1 bug → US-007a fix task inserted)
+- Learnings for future iterations:
+  - Differential rendering leaving cursor mid-content is a common bug pattern — always verify cursor position at session boundaries (start/stop)
+  - The hardware_cursor_row vs cursor_row distinction is critical and easy to miss
+  - Test coverage should include stop-after-differential-render scenarios
+---

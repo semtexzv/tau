@@ -107,8 +107,15 @@ impl<E: Send + 'static> TUI<E> {
     }
 
     /// Stop the terminal (show cursor, disable raw mode).
-    /// Cursor is already past content after render (each line ends with \r\n).
+    /// Moves cursor from `hardware_cursor_row` to `cursor_row` (end of content)
+    /// so the shell prompt appears below all TUI output, not mid-content.
     pub fn stop(&mut self) {
+        if self.hardware_cursor_row < self.cursor_row {
+            let n = self.cursor_row - self.hardware_cursor_row;
+            self.terminal.write(&format!("\x1b[{}B", n));
+            self.terminal.flush();
+            self.hardware_cursor_row = self.cursor_row;
+        }
         self.terminal.stop();
     }
 
@@ -1097,5 +1104,62 @@ mod tests {
         .await;
 
         assert!(received_resize, "handler should receive resize event");
+    }
+
+    // ── Stop cursor repositioning (US-007a) ─────────────────────────
+
+    #[test]
+    fn stop_moves_cursor_to_end_after_differential_render() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        // Render 5 lines
+        tui.root()
+            .add_child(Box::new(StubComponent::new(&["A", "B", "C", "D", "E"])));
+        tui.render(); // first render: hardware_cursor_row = 5, cursor_row = 5
+
+        // Differential update: change only line 1 → hardware_cursor_row = 2
+        tui.root().clear();
+        tui.root()
+            .add_child(Box::new(StubComponent::new(&["A", "X", "C", "D", "E"])));
+        tui.render();
+        // After this: hardware_cursor_row = 2, cursor_row = 5
+
+        let writes_before_stop = mock_terminal(&tui).writes.len();
+        tui.stop();
+
+        let mock = mock_terminal(&tui);
+        assert!(mock.stopped, "terminal.stop() was called");
+        // stop() should have written cursor-down to move from row 2 to row 5
+        assert!(
+            mock.writes.len() > writes_before_stop,
+            "stop() should write cursor movement"
+        );
+        let stop_write = &mock.writes[writes_before_stop];
+        assert!(
+            stop_write.contains("\x1b[3B"),
+            "stop() should emit cursor-down 3 (from row 2 to row 5), got: {:?}",
+            stop_write
+        );
+    }
+
+    #[test]
+    fn stop_no_cursor_movement_when_already_at_end() {
+        let mut tui: TUI<()> = TUI::new(Box::new(MockTerminal::new(80, 24)));
+        // First render: hardware_cursor_row == cursor_row (both at end)
+        tui.root()
+            .add_child(Box::new(StubComponent::new(&["A", "B", "C"])));
+        tui.render();
+        // After first render: hardware_cursor_row = 3, cursor_row = 3
+
+        let writes_before_stop = mock_terminal(&tui).writes.len();
+        tui.stop();
+
+        let mock = mock_terminal(&tui);
+        assert!(mock.stopped, "terminal.stop() was called");
+        // No additional writes for cursor movement
+        assert_eq!(
+            mock.writes.len(),
+            writes_before_stop,
+            "stop() should not write cursor movement when already at end"
+        );
     }
 }
