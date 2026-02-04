@@ -199,3 +199,28 @@ Fix inserted as US-007a: TUI::stop() must move cursor from hardware_cursor_row t
   - `vec![String::new(); n]` is idiomatic Rust for n copies of an empty string
 ## Task self-review PASSED
 ---
+
+## Iteration 6 - US-010: Text component with word wrapping
+- What was done: Implemented `wrap_text_with_ansi()` in utils.rs and `Text` component in components/text.rs. wrap_text_with_ansi splits on word boundaries, breaks long words char-by-char (grapheme-aware), tracks ANSI SGR state and re-applies at start of each wrapped line, preserves hard newlines. Text component wraps content with configurable padding_x/padding_y, pads each line to full width, caches rendered output via RefCell<Option<CachedRender>>. 17 wrap tests + 15 Text tests added. All 149 tests pass.
+- Files changed: crates/tau-tui/src/utils.rs (wrap_text_with_ansi + SGR helpers), crates/tau-tui/src/components/text.rs (new), crates/tau-tui/src/components/mod.rs (module registration), PRD.md
+- Learnings for future iterations:
+  - SGR tracking: accumulate all non-reset SGR codes in Vec<String>, \x1b[0m clears all. Redundant codes are harmless (terminal processes them in order).
+  - Break-at-space tracking: record byte position in current_line string, break_width (visible width before space), and break_sgr (SGR state at space). after_break = current_line[bp+1..] naturally includes any ANSI codes after the space.
+  - Final-line push logic: use `initial_len` to distinguish "empty hard line" (push empty) from "leftover after break" (don't push empty). Avoids spurious trailing empty lines.
+  - RefCell<Option<CachedRender>> for caching in render(&self) — safe because Component doesn't require Send and TUI runs on single thread.
+  - Text padding: left_pad + content + right_pad fills to full width. inner_width = width - 2*padding_x for wrapping.
+  - Empty text or inner_width=0 → return empty vec (no padding lines either).
+## Task self-review PASSED
+---
+
+## Iteration 7 - US-011: Box component
+- What was done: Implemented BoxComponent in src/components/box_component.rs. Holds Vec<Box<dyn Component>> children with configurable padding_x, padding_y, and optional background color. Renders children at inner width (width - 2*padding_x), wraps each line with left padding + right padding to full width, applies background ANSI code if set (bg_start + content + bg_end), adds padding_y empty lines above and below. 12 tests covering: empty box, text child with padding, background on all lines, no-bg no-ANSI, inner width rendering, multiple children, remove/clear, invalidate propagation, object safety, empty children, padding_y only. All 161 tests pass.
+- Files changed: crates/tau-tui/src/components/box_component.rs (new), crates/tau-tui/src/components/mod.rs (module registration), PRD.md
+- Learnings for future iterations:
+  - BoxComponent follows same container pattern as Container (add_child/remove_child/clear) but with render decoration
+  - Background applied as bg_start + padded_line + \x1b[0m — reset at end of each line prevents bleed
+  - When bg is None, bg_start="" and bg_end="" → no ANSI overhead in output
+  - Empty children → empty result (no padding lines emitted), matching Text's "no content = no output" convention
+  - `saturating_sub` for inner_width handles case where padding exceeds width
+## Task self-review PASSED
+---

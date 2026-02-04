@@ -380,26 +380,26 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - [x] `cargo test` passes
 - [x] `cargo check` passes
 
-### US-012: Input component [ ]
+### US-012: Input component [x]
 
 **Description:** As a user, I want a single-line text input with cursor, horizontal scrolling, and basic editing keybindings.
 
 **Acceptance Criteria:**
-- [ ] `Input` struct in `src/components/input.rs` implementing `Component`
-- [ ] Displays `"> "` prompt followed by text with inverse-video cursor
-- [ ] Cursor movement: Left, Right, Home, End, Ctrl+Left (word back), Ctrl+Right (word forward)
-- [ ] Editing: printable char insertion, Backspace, Delete, Ctrl+Backspace (delete word), Ctrl+U (delete to start), Ctrl+K (delete to end)
-- [ ] Horizontal scrolling when text exceeds available width
-- [ ] Callbacks: `on_submit: Option<Box<dyn FnMut(&str)>>` (Enter), `on_escape: Option<Box<dyn FnMut()>>` (Escape)
-- [ ] `value()` → `&str`, `set_value(s)` to get/set content
-- [ ] `focused: bool` field — renders cursor only when focused
-- [ ] Tests:
+- [x] `Input` struct in `src/components/input.rs` implementing `Component`
+- [x] Displays `"> "` prompt followed by text with inverse-video cursor
+- [x] Cursor movement: Left, Right, Home, End, Ctrl+Left (word back), Ctrl+Right (word forward)
+- [x] Editing: printable char insertion, Backspace, Delete, Ctrl+Backspace (delete word), Ctrl+U (delete to start), Ctrl+K (delete to end)
+- [x] Horizontal scrolling when text exceeds available width
+- [x] Callbacks: `on_submit: Option<Box<dyn FnMut(&str)>>` (Enter), `on_escape: Option<Box<dyn FnMut()>>` (Escape)
+- [x] `value()` → `&str`, `set_value(s)` to get/set content
+- [x] `focused: bool` field — renders cursor only when focused
+- [x] Tests:
   - Initial render shows `"> "` with cursor
   - After typing "abc", value is "abc" and render shows it
   - Backspace removes last char
   - Left/Right moves cursor, render shows cursor at correct position
-- [ ] `cargo test` passes
-- [ ] `cargo check` passes
+- [x] `cargo test` passes
+- [x] `cargo check` passes
 
 ### US-013: SelectList component [ ]
 
