@@ -64,3 +64,16 @@
   - Container also exposes `len()` and `is_empty()` for convenience
 ## Task self-review PASSED
 ---
+
+## Iteration 6 - US-006: TUI engine with full rendering
+- What was done: Implemented `TUI<E>` struct generic over user event type with full rendering to terminal. Added `as_any()`/`as_any_mut()` to Terminal trait for test downcasting. TUI wraps `Box<dyn Terminal>` and root `Container`, provides `new()`, `root()`, `start()`, `stop()`, `render()`, `event_tx()`. Render builds a single String buffer wrapped in synchronized output markers, appends `\x1b[0m` reset to each line, writes+flushes once. Stores `previous_lines` and `previous_width` for future differential rendering. 20 new tests covering construction, start/stop, rendering (empty, single/multi-line, ANSI preservation, width tracking), event channel, integration.
+- Files changed: src/tui.rs (full implementation), src/terminal.rs (added as_any/as_any_mut to Terminal trait + both impls), PRD.md
+- Learnings for future iterations:
+  - Standard Rust pattern for trait-object downcasting: add `as_any(&self) -> &dyn Any` to trait, impl returns `self`
+  - `tokio::sync::mpsc::unbounded_channel()` can be created without a tokio runtime; only recv() needs async context
+  - Each line gets `\x1b[0m\r\n` suffix — cursor ends on fresh line after last content, simplifying cursor math for differential rendering in US-007
+  - Empty render produces just sync markers `\x1b[?2026h\x1b[?2026l` — no special casing needed
+  - `event_rx` stored as `Option<UnboundedReceiver<E>>` so US-008's run loop can `.take()` it
+  - MockTerminal.writes has exactly 1 entry per render() call — verified by tests
+## Task self-review PASSED
+---

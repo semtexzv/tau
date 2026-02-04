@@ -1,0 +1,12 @@
+[package]
+name = "tau-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal UI library with differential rendering for tau"
+
+[dependencies]
+crossterm = { version = "0.28", features = ["event-stream"] }
+unicode-width = "0.2"
+unicode-segmentation = "1.11"
+tokio.workspace = true
+futures.workspace = true

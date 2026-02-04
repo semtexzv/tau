@@ -1,4 +1,4 @@
-// rtui — A minimal terminal UI library with differential rendering.
+// tau-tui — Terminal UI library with differential rendering for tau.
 
 pub mod terminal;
 pub mod utils;

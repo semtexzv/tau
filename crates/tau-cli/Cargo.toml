@@ -1,0 +1,18 @@
+[package]
+name = "tau-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Coding agent: tools, system prompt, interactive TUI"
+
+[[bin]]
+name = "tau"
+path = "src/main.rs"
+
+[dependencies]
+tau-ai = { path = "../tau-ai" }
+tau-agent = { path = "../tau-agent" }
+tau-tui = { path = "../tau-tui" }
+tokio.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true

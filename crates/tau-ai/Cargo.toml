@@ -1,0 +1,11 @@
+[package]
+name = "tau-ai"
+version = "0.1.0"
+edition = "2021"
+description = "LLM abstraction layer: types, streaming, providers"
+
+[dependencies]
+tokio.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true

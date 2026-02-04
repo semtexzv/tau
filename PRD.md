@@ -217,27 +217,27 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - [x] `cargo test` passes
 - [x] `cargo check` passes
 
-### US-007: Differential rendering [ ]
+### US-007: Differential rendering [x]
 
 **Description:** As a developer, I need the TUI to only redraw changed lines so terminal output is efficient and flicker-free.
 
 **Acceptance Criteria:**
-- [ ] `TUI::render()` compares new lines vs `previous_lines` and builds a **single `String` buffer**:
+- [x] `TUI::render()` compares new lines vs `previous_lines` and builds a **single `String` buffer**:
   - If width changed: full re-render (clear screen `\x1b[3J\x1b[2J\x1b[H` + write all lines)
   - If first render (previous empty): write all lines without clearing
   - Otherwise: find `first_changed` and `last_changed` indices, append cursor movement to `first_changed` (`\x1b[{n}A` / `\x1b[{n}B`), append `\x1b[2K` + new content for each changed line — all into the same buffer
   - Wrap entire buffer in `\x1b[?2026h` ... `\x1b[?2026l`
   - **One** `terminal.write(&buffer)` + `terminal.flush()` call at the end
-- [ ] Tracks `cursor_row` (logical end of content) and `hardware_cursor_row` (actual terminal cursor position) for correct cursor movement math
-- [ ] If content shrunk: appends line-clear sequences (`\r\n\x1b[2K`) for extra lines, then cursor-up to return
-- [ ] Tests with MockTerminal:
+- [x] Tracks `cursor_row` (logical end of content) and `hardware_cursor_row` (actual terminal cursor position) for correct cursor movement math
+- [x] If content shrunk: appends line-clear sequences (`\x1b[2K\r\n`) for extra lines, then cursor-up to return
+- [x] Tests with MockTerminal:
   - No changes → no output written
   - Single line changed → only that line rewritten (verify buffer contains exactly one `\x1b[2K` + content)
   - Width change → full redraw (buffer contains clear-screen)
   - Content grew → appends new lines
   - Content shrunk → clears old lines
-- [ ] `cargo test` passes
-- [ ] `cargo check` passes
+- [x] `cargo test` passes
+- [x] `cargo check` passes
 
 ### US-008: Async event loop with user events [ ]
 
@@ -503,6 +503,691 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - [ ] `cargo run --example loadtest -- doom.gif` works and shows smooth playback
 - [ ] `cargo check` passes
 
+---
+
+## Phase 3: Workspace + tau-ai
+
+### US-017: Convert to Cargo workspace [ ]
+
+**Description:** As a developer, I need to restructure the project as a Cargo workspace so each layer is a separate crate.
+
+**Acceptance Criteria:**
+- [ ] Move `~/rtui` to `~/tau`
+- [ ] Root `~/tau/Cargo.toml` is a workspace:
+  ```toml
+  [workspace]
+  members = ["crates/*"]
+  resolver = "2"
+  
+  [workspace.dependencies]
+  tokio = { version = "1", features = ["rt", "macros", "sync", "process", "io-util"] }
+  futures = "0.3"
+  serde = { version = "1", features = ["derive"] }
+  serde_json = "1"
+  ```
+- [ ] Move existing TUI code to `crates/tau-tui/` with its own `Cargo.toml` referencing workspace deps
+- [ ] Create empty crate stubs: `crates/tau-ai/`, `crates/tau-agent/`, `crates/tau-cli/`
+- [ ] All existing TUI tests still pass: `cargo test -p tau-tui`
+- [ ] `cargo check --workspace` passes
+
+### US-018: tau-ai core message types [ ]
+
+**Description:** As a developer, I need the core LLM message types so all crates share a common vocabulary.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-ai/src/types.rs` with:
+  ```rust
+  // Content blocks
+  pub struct TextContent { pub text: String }
+  pub struct ThinkingContent { pub thinking: String }
+  pub struct ImageContent { pub data: String, pub mime_type: String } // base64
+  pub struct ToolCall { pub id: String, pub name: String, pub arguments: serde_json::Value }
+  
+  // Messages
+  pub struct UserMessage { pub content: Vec<UserContent>, pub timestamp: u64 }
+  pub struct AssistantMessage {
+      pub content: Vec<AssistantContent>,
+      pub model: String,
+      pub usage: Usage,
+      pub stop_reason: StopReason,
+      pub error_message: Option<String>,
+  }
+  pub struct ToolResultMessage {
+      pub tool_call_id: String,
+      pub tool_name: String,
+      pub content: Vec<ResultContent>,
+      pub is_error: bool,
+  }
+  
+  pub enum Message { User(UserMessage), Assistant(AssistantMessage), ToolResult(ToolResultMessage) }
+  pub enum StopReason { Stop, Length, ToolUse, Error, Aborted }
+  pub struct Usage { pub input_tokens: u32, pub output_tokens: u32, pub cache_read: u32, pub cache_write: u32 }
+  ```
+- [ ] All types derive `Debug, Clone, Serialize, Deserialize`
+- [ ] `UserContent` enum: `Text(TextContent) | Image(ImageContent)`
+- [ ] `AssistantContent` enum: `Text(TextContent) | Thinking(ThinkingContent) | ToolCall(ToolCall)`
+- [ ] `ResultContent` enum: `Text(TextContent) | Image(ImageContent)`
+- [ ] Tests: round-trip serde for each message type
+- [ ] `cargo test -p tau-ai` passes
+- [ ] `cargo check --workspace` passes
+
+### US-019: Tool type with JSON Schema [ ]
+
+**Description:** As a developer, I need a `Tool` type with JSON Schema parameters so LLM providers can describe available tools.
+
+**Acceptance Criteria:**
+- [ ] Add `schemars = "0.8"` to tau-ai dependencies
+- [ ] `crates/tau-ai/src/tool.rs`:
+  ```rust
+  pub struct Tool {
+      pub name: String,
+      pub description: String,
+      pub parameters: schemars::schema::RootSchema,
+  }
+  ```
+- [ ] `Context` struct:
+  ```rust
+  pub struct Context {
+      pub system_prompt: Option<String>,
+      pub messages: Vec<Message>,
+      pub tools: Vec<Tool>,
+  }
+  ```
+- [ ] Helper: `Tool::from_type::<T: JsonSchema>(name, description)` that derives schema from a `schemars::JsonSchema` struct
+- [ ] Tests: derive schema from a test struct, verify JSON output matches expected shape
+- [ ] `cargo test -p tau-ai` passes
+- [ ] `cargo check --workspace` passes
+
+### US-020: StreamEvent types and Provider trait [ ]
+
+**Description:** As a developer, I need the streaming event types and a provider trait so we can plug in different LLM backends.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-ai/src/stream.rs` with `StreamEvent` enum:
+  ```rust
+  pub enum StreamEvent {
+      MessageStart { message: AssistantMessage },
+      TextDelta { content_index: usize, delta: String },
+      ThinkingDelta { content_index: usize, delta: String },
+      ToolCallDelta { content_index: usize, delta: String },
+      ContentBlockStart { content_index: usize },
+      ContentBlockEnd { content_index: usize },
+      MessageDone { message: AssistantMessage },
+      Error { error: String },
+  }
+  ```
+- [ ] `StreamOptions` struct: `temperature`, `max_tokens`, `api_key`
+- [ ] `Provider` trait:
+  ```rust
+  pub trait Provider: Send + Sync {
+      fn stream(
+          &self,
+          model: &str,
+          context: &Context,
+          options: &StreamOptions,
+      ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
+  }
+  ```
+- [ ] Re-export everything from `crates/tau-ai/src/lib.rs`
+- [ ] Tests: StreamEvent enum is constructible, Provider trait is object-safe
+- [ ] `cargo test -p tau-ai` passes
+- [ ] `cargo check --workspace` passes
+
+### US-021: Anthropic Messages API streaming [ ]
+
+**Description:** As a developer, I need the Anthropic provider that streams responses via SSE from the Messages API.
+
+**Acceptance Criteria:**
+- [ ] Add `reqwest = { version = "0.12", features = ["stream"] }` to tau-ai
+- [ ] `crates/tau-ai/src/providers/anthropic.rs` implementing `Provider`:
+  - POST to `https://api.anthropic.com/v1/messages` with `stream: true`
+  - Headers: `x-api-key`, `anthropic-version: 2023-06-01`, `content-type: application/json`
+  - Convert `Context` → Anthropic request body (messages, system, tools, max_tokens)
+  - Anthropic tool parameters: convert `RootSchema` to Anthropic's `input_schema` format
+- [ ] SSE parser: read response body as byte stream, parse `event:` + `data:` lines:
+  - `message_start` → `StreamEvent::MessageStart`
+  - `content_block_start` → `StreamEvent::ContentBlockStart`
+  - `content_block_delta` with `text_delta` → `StreamEvent::TextDelta`
+  - `content_block_delta` with `thinking_delta` → `StreamEvent::ThinkingDelta`
+  - `content_block_delta` with `input_json_delta` → `StreamEvent::ToolCallDelta`
+  - `content_block_stop` → `StreamEvent::ContentBlockEnd`
+  - `message_delta` → update stop_reason + usage
+  - `message_stop` → `StreamEvent::MessageDone`
+  - `error` → `StreamEvent::Error`
+- [ ] Handles Anthropic error responses (non-200 status) with clear error messages
+- [ ] Tests:
+  - Request body serialization: verify JSON structure matches Anthropic API spec
+  - SSE parsing: feed mock SSE lines, verify correct `StreamEvent` sequence
+  - Tool schema conversion: verify `RootSchema` maps to valid Anthropic `input_schema`
+- [ ] `cargo test -p tau-ai` passes
+- [ ] `cargo check --workspace` passes
+
+### US-022: Anthropic provider integration test [ ]
+
+**Description:** As a developer, I want a live integration test to verify the Anthropic provider works end-to-end.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-ai/tests/anthropic_live.rs` gated behind `#[ignore]` (run explicitly with `cargo test -- --ignored`)
+- [ ] Reads `ANTHROPIC_API_KEY` from env
+- [ ] Sends a simple prompt ("Say hello in exactly 3 words"), collects stream events
+- [ ] Verifies: got `MessageStart`, at least one `TextDelta`, `MessageDone`
+- [ ] Verifies: final message has `stop_reason: Stop` and `usage.output_tokens > 0`
+- [ ] Tool call test: defines a `get_weather(city: String)` tool, sends "What's the weather in Paris?", verifies `ToolCallDelta` events and final `ToolCall` content block
+- [ ] `cargo test -p tau-ai -- --ignored` passes with valid API key
+- [ ] `cargo check --workspace` passes
+
+### US-REVIEW-PHASE3: Review tau-ai (US-017 through US-022) [ ]
+
+**Description:** Review the LLM abstraction layer as a cohesive system.
+
+**Acceptance Criteria:**
+- [ ] Identify phase scope: US-017 to US-022
+- [ ] Review all tau-ai source files together
+- [ ] Evaluate quality:
+  - Types are ergonomic and match Anthropic's actual API well
+  - Provider trait is minimal and extensible (easy to add OpenAI later)
+  - SSE parser handles edge cases (partial reads, empty data lines, reconnection)
+  - Error handling is consistent (Result types, clear error messages)
+  - Serde derives work correctly for all types
+- [ ] Cross-task analysis:
+  - Verify `Context` → Anthropic JSON conversion is complete (system, messages, tools, images)
+  - Verify streaming accumulation produces correct final `AssistantMessage`
+  - Verify tool call JSON delta accumulation handles partial JSON correctly
+  - Check that `Provider` trait doesn't leak Anthropic-specific details
+- [ ] If issues found: insert fix tasks, append to progress.txt
+- [ ] If no issues: append "## Phase 3 review PASSED" to progress.txt, mark [x]
+
+---
+
+## Phase 4: tau-agent
+
+### US-023: tau-agent crate with AgentTool trait [ ]
+
+**Description:** As a developer, I need the agent crate with a tool trait so tools can be defined and executed.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-agent/Cargo.toml` depending on `tau-ai`
+- [ ] `crates/tau-agent/src/tool.rs`:
+  ```rust
+  pub struct AgentToolDef {
+      pub tool: tau_ai::Tool,      // name, description, schema
+      pub label: String,           // human-readable label for UI
+  }
+  
+  /// Result of tool execution
+  pub struct ToolResult {
+      pub content: Vec<tau_ai::ResultContent>,
+      pub is_error: bool,
+  }
+  
+  /// Trait for executable tools
+  pub trait AgentTool: Send + Sync {
+      fn def(&self) -> &AgentToolDef;
+      /// Execute the tool. Async because tools do IO (file, process, network).
+      /// This is the ONE async boundary — runs in a spawned task.
+      fn execute(
+          &self,
+          params: serde_json::Value,
+      ) -> Pin<Box<dyn Future<Output = ToolResult> + Send>>;
+  }
+  ```
+- [ ] Tests: mock tool implementing `AgentTool`, verify def() and execute()
+- [ ] `cargo test -p tau-agent` passes
+- [ ] `cargo check --workspace` passes
+
+### US-024: Agent state machine (sync core) [ ]
+
+**Description:** As a developer, I need the `Agent` struct — a synchronous state machine that processes events and returns actions to perform.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-agent/src/agent.rs`:
+  ```rust
+  pub enum AgentState { Idle, Streaming, ExecutingTools, }
+  
+  /// Actions the caller must perform (spawn async tasks)
+  pub enum AgentAction {
+      /// Start streaming from LLM with this context
+      StreamLlm { context: tau_ai::Context, options: tau_ai::StreamOptions },
+      /// Execute this tool call
+      ExecuteTool { tool_call: tau_ai::ToolCall },
+      /// Agent is done (no more work)
+      Done,
+  }
+  
+  pub struct Agent {
+      state: AgentState,
+      messages: Vec<tau_ai::Message>,
+      tools: Vec<Box<dyn AgentTool>>,
+      system_prompt: String,
+      model: String,
+      pending_tool_calls: Vec<tau_ai::ToolCall>,
+      tool_results: Vec<tau_ai::ToolResultMessage>,
+      current_message: Option<tau_ai::AssistantMessage>,
+  }
+  ```
+- [ ] `Agent::prompt(&mut self, text: &str) -> Vec<AgentAction>`:
+  - Appends `UserMessage` to messages
+  - Sets state to `Streaming`
+  - Returns `[AgentAction::StreamLlm { context, options }]`
+- [ ] `Agent::handle_stream_event(&mut self, event: StreamEvent) -> Vec<AgentAction>`:
+  - `TextDelta` / `ThinkingDelta` / `ToolCallDelta`: accumulate into `current_message`, return empty (no actions)
+  - `MessageDone`: if message has tool calls → set state to `ExecutingTools`, return `AgentAction::ExecuteTool` for each. If no tool calls → set state to `Idle`, return `[AgentAction::Done]`
+  - `Error`: set state to `Idle`, store error, return `[AgentAction::Done]`
+- [ ] `Agent::handle_tool_result(&mut self, tool_call_id: &str, result: ToolResult) -> Vec<AgentAction>`:
+  - Records result as `ToolResultMessage`, removes from pending
+  - When all pending complete: appends all tool results to messages, sets state to `Streaming`, returns `[AgentAction::StreamLlm { ... }]` for next turn
+- [ ] `Agent::state()`, `Agent::messages()`, `Agent::current_message()` — getters
+- [ ] Tests:
+  - prompt → returns StreamLlm action
+  - handle text deltas → no actions, current_message accumulates
+  - handle done with tool calls → returns ExecuteTool actions
+  - handle all tool results → returns StreamLlm for next turn
+  - handle done without tool calls → returns Done
+- [ ] `cargo test -p tau-agent` passes
+- [ ] `cargo check --workspace` passes
+
+### US-025: Agent events for UI observation [ ]
+
+**Description:** As a developer, I need the agent to emit events so the TUI can observe and render agent activity.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-agent/src/events.rs`:
+  ```rust
+  pub enum AgentEvent {
+      /// New turn started (LLM call)
+      TurnStart,
+      /// Streaming text delta from LLM
+      TextDelta { delta: String },
+      /// Streaming thinking delta
+      ThinkingDelta { delta: String },
+      /// LLM response complete
+      ResponseComplete { message: AssistantMessage },
+      /// Tool execution started
+      ToolStart { tool_call_id: String, tool_name: String, args: serde_json::Value },
+      /// Tool execution finished
+      ToolEnd { tool_call_id: String, tool_name: String, result: ToolResult },
+      /// Agent finished all work
+      AgentDone,
+      /// Error occurred
+      AgentError { error: String },
+  }
+  ```
+- [ ] `Agent` methods now also return events alongside actions:
+  ```rust
+  pub struct AgentOutput {
+      pub actions: Vec<AgentAction>,
+      pub events: Vec<AgentEvent>,
+  }
+  ```
+  - `prompt()` → emits `TurnStart`
+  - `handle_stream_event(TextDelta)` → emits `AgentEvent::TextDelta`
+  - `handle_stream_event(MessageDone)` → emits `ResponseComplete` + `ToolStart` per tool call
+  - `handle_tool_result()` → emits `ToolEnd`, and when all done: `TurnStart` (next turn) or `AgentDone`
+- [ ] Tests: verify event sequences for full prompt→stream→tools→stream→done cycle
+- [ ] `cargo test -p tau-agent` passes
+- [ ] `cargo check --workspace` passes
+
+### US-026: Spawn helpers (async IO wiring) [ ]
+
+**Description:** As a developer, I need helper functions that take `AgentAction`s and spawn the appropriate async tasks, posting results back via a channel.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-agent/src/spawn.rs`:
+  ```rust
+  /// Spawns async work for an AgentAction, posting results back via tx.
+  pub fn spawn_action(
+      action: AgentAction,
+      provider: Arc<dyn Provider>,
+      tools: Arc<Vec<Box<dyn AgentTool>>>,
+      tx: UnboundedSender<AgentEvent>,
+  )
+  ```
+  - `StreamLlm`: spawns `tokio::spawn` that calls `provider.stream()`, forwards each `StreamEvent` as `AgentEvent` via `tx`
+  - `ExecuteTool`: finds tool by name, spawns `tokio::spawn` that calls `tool.execute()`, sends `ToolEnd` via `tx`
+  - `Done`: sends `AgentDone` via `tx`
+- [ ] Handles panics/errors in spawned tasks: catches and sends `AgentError` via `tx`
+- [ ] Tests: mock provider + mock tool, verify events arrive on channel
+- [ ] `cargo test -p tau-agent` passes
+- [ ] `cargo check --workspace` passes
+
+### US-REVIEW-PHASE4: Review tau-agent (US-023 through US-026) [ ]
+
+**Description:** Review the agent framework as a cohesive system.
+
+**Acceptance Criteria:**
+- [ ] Identify phase scope: US-023 to US-026
+- [ ] Review all tau-agent source files together
+- [ ] Evaluate quality:
+  - Agent state machine is simple and correct
+  - No async in Agent struct — purely sync transitions
+  - AgentAction/AgentEvent split is clean
+  - Spawn helpers don't leak internal details
+- [ ] Cross-task analysis:
+  - Trace full cycle: prompt → stream → tool calls → execute → next turn → done
+  - Verify tool call ID tracking is correct (pending set management)
+  - Verify streaming accumulation builds correct AssistantMessage
+  - Check error paths: provider error, tool error, tool panic
+  - Verify events arrive in correct order for UI rendering
+- [ ] If issues found: insert fix tasks, append to progress.txt
+- [ ] If no issues: append "## Phase 4 review PASSED" to progress.txt, mark [x]
+
+---
+
+## Phase 5: tau-cli
+
+### US-027: tau-cli crate with read tool [ ]
+
+**Description:** As a developer, I need the CLI crate with a read tool that reads file contents.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-cli/Cargo.toml` depending on `tau-ai`, `tau-agent`, `tau-tui`
+- [ ] `crates/tau-cli/src/tools/read.rs` implementing `AgentTool`:
+  - Parameters (JsonSchema): `path: String`, `offset: Option<u32>` (line number), `limit: Option<u32>` (max lines)
+  - Reads file, returns content as `TextContent`
+  - Truncates output if exceeding 2000 lines or 50KB (whichever first)
+  - Returns error result if file doesn't exist or isn't readable
+  - Shows `[N more lines, use offset to continue]` when truncated
+- [ ] Tests:
+  - Read existing file → content matches
+  - Read with offset/limit → correct subset
+  - Read nonexistent → error result
+  - Read large file → truncated with message
+- [ ] `cargo test -p tau-cli` passes
+- [ ] `cargo check --workspace` passes
+
+### US-028: Bash tool [ ]
+
+**Description:** As a developer, I need a bash tool that executes shell commands.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-cli/src/tools/bash.rs` implementing `AgentTool`:
+  - Parameters: `command: String`, `timeout: Option<u64>` (seconds)
+  - Spawns `tokio::process::Command` with `bash -c` (or `sh -c`)
+  - Captures stdout + stderr combined
+  - Truncates output to 50KB / 2000 lines
+  - Returns exit code in output: `"Exit code: N\n<output>"`
+  - Respects timeout (default: no timeout), kills process on timeout
+  - Sets CWD to agent's working directory
+- [ ] Tests:
+  - `echo hello` → "Exit code: 0\nhello\n"
+  - `exit 1` → "Exit code: 1\n"
+  - Timeout → error result with "timed out" message
+  - Large output → truncated
+- [ ] `cargo test -p tau-cli` passes
+- [ ] `cargo check --workspace` passes
+
+### US-029: Edit and write tools [ ]
+
+**Description:** As a developer, I need edit (find-and-replace) and write (create/overwrite) tools for file manipulation.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-cli/src/tools/write.rs` implementing `AgentTool`:
+  - Parameters: `path: String`, `content: String`
+  - Creates parent directories if needed (`fs::create_dir_all`)
+  - Writes content to file (creates or overwrites)
+  - Returns success message with bytes written
+- [ ] `crates/tau-cli/src/tools/edit.rs` implementing `AgentTool`:
+  - Parameters: `path: String`, `old_text: String`, `new_text: String`
+  - Reads file, finds exact match of `old_text`, replaces with `new_text`
+  - Error if file doesn't exist, or `old_text` not found, or multiple matches
+  - Returns success message showing the replacement
+- [ ] Tests:
+  - Write new file → file exists with content
+  - Write creates parent dirs
+  - Edit exact match → replaced
+  - Edit no match → error
+  - Edit multiple matches → error
+- [ ] `cargo test -p tau-cli` passes
+- [ ] `cargo check --workspace` passes
+
+### US-030: System prompt and CLI entry point [ ]
+
+**Description:** As a developer, I need the system prompt and a basic CLI that can run the agent in non-interactive (pipe) mode.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-cli/src/prompt.rs`: system prompt string for coding tasks:
+  - Describes available tools (read, write, edit, bash)
+  - Sets coding assistant persona
+  - Instructions for tool use (read before edit, verify after changes)
+- [ ] `crates/tau-cli/src/main.rs` with `#[tokio::main]`:
+  - Reads `ANTHROPIC_API_KEY` from env (error if missing)
+  - CLI args: `tau [prompt]` or `echo "prompt" | tau` (stdin)
+  - If prompt provided: creates `Agent`, sets up tools, calls `prompt()`, runs event loop printing to stdout (no TUI), exits when done
+  - Prints assistant text to stdout as it streams
+  - Prints tool calls and results to stderr
+- [ ] `cargo run -p tau-cli -- "What is 2+2?"` works (streams response to stdout)
+- [ ] `cargo check --workspace` passes
+
+### US-031: Interactive TUI mode [ ]
+
+**Description:** As a developer, I need an interactive TUI mode where the user can chat with the agent, see streaming responses, and observe tool execution.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-cli/src/interactive.rs` using `tau-tui`:
+  - Layout: message history (Text components in a Container) + Input at bottom
+  - User types in Input, presses Enter → calls `agent.prompt()`
+  - TUI `event_tx` channel receives `AgentEvent`s from spawn helpers
+  - Handler matches events:
+    - `TurnStart` → add loader/spinner component
+    - `TextDelta` → append to current assistant Text component, re-render
+    - `ThinkingDelta` → show in dimmed text (collapsible later)
+    - `ToolStart` → show tool name + args in styled text
+    - `ToolEnd` → show result (truncated if long)
+    - `ResponseComplete` → finalize assistant message display
+    - `AgentDone` → remove loader, refocus Input
+    - `AgentError` → show error in red
+  - Scrolling: content grows downward, latest messages visible
+  - Ctrl+C while agent running → abort current request
+  - Ctrl+C while idle → quit
+- [ ] `cargo run -p tau-cli` (no args) → launches interactive mode
+- [ ] `cargo check --workspace` passes
+
+### US-REVIEW-PHASE5: Review tau-cli (US-027 through US-031) [ ]
+
+**Description:** Review the coding agent as a complete system.
+
+**Acceptance Criteria:**
+- [ ] Identify phase scope: US-027 to US-031
+- [ ] Review all tau-cli source files together
+- [ ] Evaluate quality:
+  - Tools are robust (error handling, edge cases)
+  - System prompt is clear and effective
+  - TUI integration is clean (no spaghetti event handling)
+  - Non-interactive mode works for scripting/piping
+- [ ] Cross-task analysis:
+  - End-to-end: type prompt → LLM streams → tool calls → results → next turn → display
+  - Verify tool output truncation is consistent
+  - Verify abort (Ctrl+C) cleanly cancels HTTP stream and tool processes
+  - Verify message history renders correctly after multiple turns
+  - Check that edit tool handles edge cases (empty files, binary files, unicode)
+- [ ] If issues found: insert fix tasks, append to progress.txt
+- [ ] If no issues: append "## Phase 5 review PASSED" to progress.txt, mark [x]
+
+---
+
+---
+
+## Phase 6: Source-based extensions
+
+Pi-mono loads TypeScript extensions via `jiti` (JIT TS compiler). For tau, we do the equivalent in Rust:
+
+1. Extension is a `.rs` file (or small Cargo project with `Cargo.toml`)
+2. tau discovers extension sources from `~/.tau/extensions/` and `<cwd>/.tau/extensions/`
+3. tau compiles them to `cdylib` via `rustc` (single file) or `cargo build` (Cargo project)
+4. tau loads the resulting `.so`/`.dylib` via `libloading`
+5. Extension exports `#[no_mangle] pub extern "C" fn tau_extension(api: *mut TauExtApi)` 
+6. Reload = recompile + `dlclose` + `dlopen`
+
+The extension API crosses a C ABI boundary (`extern "C"` + `#[repr(C)]` vtable struct) so extensions work regardless of compiler version. A `tau-ext` crate wraps this in ergonomic Rust:
+
+```rust
+// ~/.tau/extensions/my_tool.rs
+use tau_ext::prelude::*;
+
+tau_extension!(|api| {
+    api.register_tool(ToolDef {
+        name: "my_tool",
+        description: "Does something custom",
+        parameters: json_schema!(MyParams),
+        execute: |params, _ctx| {
+            let p: MyParams = serde_json::from_value(params)?;
+            Ok(ToolResult::text(format!("result: {}", p.input)))
+        },
+    });
+
+    api.on("tool_result", |event, _ctx| {
+        // observe tool results
+    });
+});
+
+#[derive(Deserialize, JsonSchema)]
+struct MyParams { input: String }
+```
+
+### US-032: tau-ext crate with C ABI extension interface [ ]
+
+**Description:** As an extension author, I need a stable C ABI interface and an ergonomic Rust wrapper so I can write `.rs` extensions that tau loads at runtime.
+
+**Acceptance Criteria:**
+- [ ] New crate: `crates/tau-ext/`
+- [ ] `crates/tau-ext/src/abi.rs` — the C ABI contract:
+  ```rust
+  /// Stable C ABI vtable passed to extensions.
+  /// tau populates this with function pointers.
+  /// Extensions call these to register tools, subscribe to events, etc.
+  #[repr(C)]
+  pub struct TauExtApi {
+      pub ctx: *mut c_void,
+      pub register_tool: extern "C" fn(ctx: *mut c_void, def_json: *const c_char),
+      pub on_event: extern "C" fn(ctx: *mut c_void, event_name: *const c_char, handler_id: u64),
+      pub log: extern "C" fn(ctx: *mut c_void, msg: *const c_char),
+      // ... kept minimal for v1
+  }
+  ```
+  All data crosses the boundary as JSON strings (`*const c_char`) — simple, stable, debuggable.
+- [ ] `crates/tau-ext/src/lib.rs` — ergonomic Rust wrapper:
+  - `ExtensionApi` struct wrapping `TauExtApi` with safe Rust methods:
+    - `register_tool(def: ToolDef)` — serializes to JSON, calls C fn
+    - `on(event: &str, handler: F)` — stores closure, passes handler_id to C fn
+    - `log(msg: &str)`
+  - `ToolDef` struct: `name`, `description`, `parameters` (serde_json::Value), `execute` callback
+  - `tau_extension!` proc-macro-free helper macro that generates the `#[no_mangle] extern "C"` entry point
+- [ ] Re-exports: `serde`, `serde_json`, `schemars` for extension authors
+- [ ] Tests: `TauExtApi` is `#[repr(C)]` and FFI-safe (compile test)
+- [ ] `cargo check --workspace` passes
+
+### US-033: Extension compiler and loader [ ]
+
+**Description:** As a developer, I need tau to discover, compile, and load `.rs` extension files at startup.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-cli/src/extensions/compiler.rs`:
+  - `compile_single_file(path: &Path) -> Result<PathBuf>`:
+    - Runs `rustc --crate-type=cdylib --edition=2021 -o <cache>/ext_name.so -L <tau_libs> --extern tau_ext=<tau_ext.rlib> <path>`
+    - Caches compiled `.so` in `~/.tau/cache/extensions/`
+    - Recompiles only if source `.rs` is newer than cached `.so` (mtime check)
+    - Returns path to compiled `.so`
+  - `compile_cargo_project(dir: &Path) -> Result<PathBuf>`:
+    - Detects `Cargo.toml` in directory
+    - Runs `cargo build --release --lib` in extension dir
+    - Returns path to built cdylib from `target/release/`
+- [ ] `crates/tau-cli/src/extensions/loader.rs`:
+  - `load_extension(so_path: &Path) -> Result<LoadedExtension>`:
+    - Uses `libloading::Library::new()` to load `.so`
+    - Looks up `tau_extension` symbol
+    - Creates `TauExtApi` vtable with function pointers back into tau
+    - Calls the extension's entry point with `&mut TauExtApi`
+    - Collects registered tools, event handlers into `LoadedExtension`
+  - `LoadedExtension` struct: tools, event handlers, library handle (keeps `.so` alive)
+- [ ] Tests:
+  - Compile a test `.rs` extension file → produces `.so`
+  - Load the `.so` → extension's `register_tool` was called
+  - Mtime cache: second compile is skipped when source unchanged
+- [ ] `cargo test -p tau-cli` passes
+- [ ] `cargo check --workspace` passes
+
+### US-034: Extension discovery and lifecycle [ ]
+
+**Description:** As a developer, I need tau to discover extensions from standard directories and support reload.
+
+**Acceptance Criteria:**
+- [ ] `crates/tau-cli/src/extensions/discovery.rs`:
+  - `discover_extensions(cwd: &Path) -> Vec<ExtensionSource>`:
+    - Scans `~/.tau/extensions/` (global)
+    - Scans `<cwd>/.tau/extensions/` (project-local)
+    - For each entry:
+      - `.rs` file → `ExtensionSource::SingleFile(path)`
+      - Directory with `Cargo.toml` → `ExtensionSource::CargoProject(path)`
+      - Directory with `lib.rs` or `mod.rs` → single-file compile of that file
+    - Deduplicates by resolved path
+  - `ExtensionSource` enum: `SingleFile(PathBuf)` | `CargoProject(PathBuf)`
+- [ ] `crates/tau-cli/src/extensions/manager.rs`:
+  - `ExtensionManager` struct:
+    - `load_all(&mut self, cwd: &Path)` — discover + compile + load all
+    - `reload(&mut self, cwd: &Path)` — unload all (drop `Library` handles) + load_all
+    - `get_tools() -> Vec<&AgentTool>` — all tools from all extensions
+    - `fire_event(event: &str, data: &serde_json::Value)` — call all handlers for event
+  - Reload triggered by a keyboard shortcut (Ctrl+Shift+R) or `/reload` command
+- [ ] Integration with tau-cli:
+  - On startup: `ExtensionManager::load_all()`
+  - Extension tools added to agent's tool set alongside built-in tools
+  - Extension event handlers called at appropriate lifecycle points (tool_call, tool_result, agent_start, agent_end)
+- [ ] Tests:
+  - Discover finds `.rs` files in test directories
+  - Load + reload cycle works (tool registered, unloaded, re-registered)
+  - Extension tool is callable by the agent
+- [ ] `cargo test -p tau-cli` passes
+- [ ] `cargo check --workspace` passes
+
+### US-035: Extension event system [ ]
+
+**Description:** As an extension author, I need to subscribe to agent lifecycle events so I can observe and modify behavior.
+
+**Acceptance Criteria:**
+- [ ] Events available to extensions (passed as JSON over C ABI):
+  - `agent_start` — agent loop started
+  - `agent_end` — agent loop finished
+  - `turn_start` — new LLM call
+  - `turn_end` — LLM response + tool results complete
+  - `tool_call` — before tool execution (can block/modify)
+  - `tool_result` — after tool execution (can modify result)
+  - `input` — user input received (can transform)
+- [ ] Event handlers return optional JSON result:
+  - `tool_call` handler returns `{ "block": true, "reason": "..." }` to prevent execution
+  - `tool_result` handler returns `{ "content": [...] }` to modify result
+  - `input` handler returns `{ "action": "transform", "text": "..." }` to modify input
+- [ ] `ExtensionManager::fire_event()` calls all handlers for the event in extension load order, merges results
+- [ ] Tests:
+  - Register handler for `tool_call` → handler invoked with correct data
+  - `tool_call` handler blocks → tool not executed
+  - `tool_result` handler modifies → modified result used
+- [ ] `cargo test -p tau-cli` passes
+- [ ] `cargo check --workspace` passes
+
+### US-REVIEW-PHASE6: Review extension system (US-032 through US-035) [ ]
+
+**Description:** Review the extension system as a cohesive layer.
+
+**Acceptance Criteria:**
+- [ ] Identify phase scope: US-032 to US-035
+- [ ] Review all extension source files together
+- [ ] Evaluate quality:
+  - C ABI is truly stable (no Rust-specific types crossing boundary)
+  - JSON serialization for all data crossing FFI is correct
+  - `tau-ext` wrapper is ergonomic (extension authors don't see unsafe)
+  - Compilation caching works correctly (no stale dylibs)
+  - Memory safety: Library handles kept alive, no dangling pointers
+- [ ] Cross-task analysis:
+  - Verify extension tools integrate with agent (appear in tool list, executable)
+  - Verify event handlers fire at correct lifecycle points
+  - Verify reload drops old Library handles before loading new ones
+  - Check error handling: compile errors shown to user, bad extensions don't crash tau
+  - Verify `tau-ext` crate is independently publishable (extension authors add it as dependency)
+- [ ] If issues found: insert fix tasks, append to progress.txt
+- [ ] If no issues: append "## Phase 6 review PASSED" to progress.txt, mark [x]
+
+---
+
 ## Non-Goals
 
 - **No alternate-screen mode** — scrolling model only (like pi-mono)
@@ -514,6 +1199,11 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - **No Kitty keyboard protocol** — standard crossterm key events only
 - **No layout engine** — components stack vertically, width is passed down, that's it
 - **No built-in widgets beyond the basics** — no settings lists, no cancellable loaders
+- **No multi-provider support yet** — Anthropic only (Provider trait is extensible for later)
+- **No session persistence** — no saving/loading conversation history
+- **No model discovery/registry** — hardcoded model string for now
+- **No WASM or process-based extensions** — source-based dylib only
+- **No extension UI widgets** — extensions register tools and event handlers, not TUI components (v1)
 
 ## Technical Considerations
 
