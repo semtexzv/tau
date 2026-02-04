@@ -671,14 +671,22 @@ feature to use `tau-iface::AsyncFd` on stdin instead of `mio`/`polling`/`async-i
 so terminal event reading runs on the shared tau-rt reactor.
 HTTP crates are handled separately in US-RT-005 (tau-http is built from scratch on tau-iface).
 
+This task may require extending the tau-rt/tau-iface C ABI with additional
+`#[no_mangle]` functions if crossterm needs primitives not yet exposed (e.g.
+edge-triggered vs level-triggered polling, interest modification, readiness caching).
+Any new functions must be added to **both** tau-rt (implementation) and tau-iface
+(extern declaration + safe wrapper) to keep the interfaces in sync.
+
 **Acceptance Criteria:**
 - [ ] Git submodule under `vendor/crossterm` (already added)
 - [ ] Patch crossterm's `event-stream` feature to use `tau-iface::AsyncFd` on stdin fd
   instead of `mio`/`polling`/`async-io` internally
-- [ ] Patch is minimal: only replace the IO primitive, don't restructure crossterm internals
+- [ ] If crossterm needs new runtime primitives: add `#[no_mangle]` exports to tau-rt
+  and matching extern declarations + safe wrappers to tau-iface
 - [ ] Workspace `[patch.crates-io]` maps crossterm to vendored path
 - [ ] `crossterm::event::EventStream` works with tau-rt reactor (terminal key events arrive)
 - [ ] `cargo check --workspace` passes with vendored crossterm
+- [ ] All existing tau-tui tests still pass
 - [ ] No upstream PRs required at this stage — just local patches
 
 ### US-RT-003: Integration test — host and plugin share reactor [ ]
