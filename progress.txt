@@ -15,3 +15,16 @@
   - cargo check and cargo test both pass with zero warnings
 ## Task self-review PASSED
 ---
+
+## Iteration 2 - US-002: Terminal trait and CrosstermTerminal
+- What was done: Implemented Terminal trait with 7 methods (start, stop, write, flush, size, hide_cursor, show_cursor), CrosstermTerminal using crossterm, and MockTerminal capturing writes to Vec<String>. Wrote 9 tests covering construction, writes, start/stop, cursor visibility, size, flush, and object safety.
+- Files changed: src/terminal.rs, PRD.md
+- Learnings for future iterations:
+  - Terminal trait is object-safe — can use `Box<dyn Terminal>` (verified with test)
+  - MockTerminal has public fields (writes, started, stopped, cursor_visible) for direct test assertions
+  - MockTerminal.output() concatenates all writes for full output inspection
+  - MockTerminal.set_size() allows simulating resize in tests
+  - crossterm::terminal::size() may fail in test/CI environments — fallback to (80, 24)
+  - Event reading is NOT on the trait — crossterm's EventStream used directly by TUI run loop
+## Task self-review PASSED
+---

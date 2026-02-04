@@ -62,22 +62,22 @@ The event loop is async (tokio). The TUI is generic over a user event type `E`, 
 - [x] Tests: both terminals can be constructed, MockTerminal captures writes
 - [x] `cargo check` passes
 
-### US-003: ANSI escape code utilities [ ]
+### US-003: ANSI escape code utilities [x]
 
 **Description:** As a developer, I need utilities to parse and strip ANSI escape codes so I can correctly measure visible text width.
 
 **Acceptance Criteria:**
-- [ ] `src/utils.rs` with functions:
+- [x] `src/utils.rs` with functions:
   - `strip_ansi(s: &str) -> String` — remove all ANSI escape sequences (CSI `\x1b[...m/G/K/H/J`, OSC `\x1b]...\x07`, APC `\x1b_...\x07`)
   - `extract_ansi_code(s: &str, pos: usize) -> Option<(String, usize)>` — extract escape code at position, return code and byte length consumed
-- [ ] Tests:
+- [x] Tests:
   - `strip_ansi` on plain text returns text unchanged
   - `strip_ansi` on `"\x1b[31mhello\x1b[0m"` returns `"hello"`
   - `strip_ansi` strips OSC hyperlinks (`\x1b]8;;url\x07text\x1b]8;;\x07`)
   - `extract_ansi_code` returns `None` for non-escape positions
   - `extract_ansi_code` returns SGR code and length for `\x1b[31m`
-- [ ] `cargo test` passes
-- [ ] `cargo check` passes
+- [x] `cargo test` passes
+- [x] `cargo check` passes
 
 ### US-004: Visible width calculation [ ]
 
