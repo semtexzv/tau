@@ -357,28 +357,28 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - [x] `cargo test` passes
 - [x] `cargo check` passes
 
-### US-011: Box component [ ]
+### US-011: Box component [x]
 
 **Description:** As a developer, I want a Box component that wraps children with padding and optional background color.
 
 **Acceptance Criteria:**
-- [ ] `BoxComponent` struct in `src/components/box_component.rs` implementing `Component`
-- [ ] Holds `Vec<Box<dyn Component>>` children
-- [ ] Constructor: `new(padding_x, padding_y)`
-- [ ] `set_bg(ansi_code: &str)` — sets background color as raw ANSI code (e.g., `"\x1b[48;5;236m"`)
-- [ ] `add_child()`, `remove_child(index)`, `clear()`
-- [ ] `render(width)`:
+- [x] `BoxComponent` struct in `src/components/box_component.rs` implementing `Component`
+- [x] Holds `Vec<Box<dyn Component>>` children
+- [x] Constructor: `new(padding_x, padding_y)`
+- [x] `set_bg(ansi_code: &str)` — sets background color as raw ANSI code (e.g., `"\x1b[48;5;236m"`)
+- [x] `add_child()`, `remove_child(index)`, `clear()`
+- [x] `render(width)`:
   - Renders children at `width - 2*padding_x`
   - Prepends `padding_x` spaces to each child line
   - Pads each line to full `width`
   - Applies background color to entire padded line if set
   - Adds `padding_y` empty (background-filled) lines above and below
-- [ ] Tests:
+- [x] Tests:
   - Box with one Text child renders with correct padding
   - Box with background applies bg to all lines including padding
   - Empty box renders nothing
-- [ ] `cargo test` passes
-- [ ] `cargo check` passes
+- [x] `cargo test` passes
+- [x] `cargo check` passes
 
 ### US-012: Input component [ ]
 
