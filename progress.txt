@@ -4,3 +4,14 @@
 (Patterns discovered during implementation)
 
 ---
+
+## Iteration 1 - US-001: Project scaffolding and dependencies
+- What was done: Initialized Cargo lib project, set up all dependencies (crossterm with event-stream, unicode-width, unicode-segmentation, tokio, futures), created module structure with placeholder comments.
+- Files changed: Cargo.toml, src/lib.rs, src/terminal.rs, src/utils.rs, src/component.rs, src/tui.rs, src/components/mod.rs
+- Learnings for future iterations:
+  - crossterm 0.28.1 resolved (0.29.0 available but PRD specifies 0.28)
+  - unicode-segmentation resolved to 1.12.0 (compatible with specified 1.11)
+  - All 56 dependency packages lock cleanly
+  - cargo check and cargo test both pass with zero warnings
+## Task self-review PASSED
+---
