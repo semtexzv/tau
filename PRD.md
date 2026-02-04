@@ -287,21 +287,21 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - [x] `cargo test -p tau-tui` passes
 - [x] `cargo check` passes
 
-### US-REVIEW-PHASE1: Review foundation (US-001 through US-008) [ ]
+### US-REVIEW-PHASE1: Review foundation (US-001 through US-008) [x]
 
 **Description:** Review the foundation layer as a cohesive system.
 
 **Acceptance Criteria:**
-- [ ] Identify phase scope: US-001 to US-008
-- [ ] Review all phase code files together
-- [ ] Evaluate quality:
+- [x] Identify phase scope: US-001 to US-008
+- [x] Review all phase code files together
+- [x] Evaluate quality:
   - Good taste: Simple and elegant across all tasks?
   - No special cases: Edge cases handled through design?
   - Data structures: Consistent and appropriate?
   - Complexity: Can anything be simplified?
   - Duplication: Any repeated logic between tasks?
   - Integration: Do components work together cleanly?
-- [ ] Cross-task analysis:
+- [x] Cross-task analysis:
   - Verify `Component` trait is ergonomic (not too many required methods)
   - Verify `Terminal` trait is minimal but sufficient (and that event reading being outside the trait works)
   - Verify differential rendering math is correct
@@ -309,11 +309,11 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
   - Verify async event loop handles edge cases (channel closed, stream ended)
   - Verify focus management integrates cleanly with the event loop
   - Verify `TUI<E>` generic is not overly constraining
-- [ ] If issues found:
+- [x] If issues found:
   - Insert fix tasks after the failing task (US-XXXa, US-XXXb, etc.)
   - Append review findings to progress.txt
   - Do NOT mark this review task [x]
-- [ ] If no issues:
+- [x] If no issues:
   - Append "## Phase 1 review PASSED" to progress.txt
   - Mark this review task [x]
   - Commit: "docs: phase 1 review complete"

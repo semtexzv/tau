@@ -147,3 +147,45 @@ Fix inserted as US-007a: TUI::stop() must move cursor from hardware_cursor_row t
   - The hardware_cursor_row vs cursor_row distinction is critical and easy to miss
   - Test coverage should include stop-after-differential-render scenarios
 ---
+
+## Iteration 3 - US-007a: Fix cursor repositioning on TUI stop
+- What was done: Fixed TUI::stop() to emit `\x1b[{n}B` cursor-down escape before calling terminal.stop() when hardware_cursor_row < cursor_row. Added 2 tests: one verifying cursor movement after differential render (5 lines, update line 1, stop moves cursor down 3), one verifying no cursor movement when already at end. All 111 tests pass.
+- Files changed: crates/tau-tui/src/tui.rs (stop() fix + 2 tests), PRD.md (criteria marked [x])
+- Learnings for future iterations:
+  - TDD worked cleanly: wrote 2 tests first, one failed, one passed (correct by accident since stop() was a no-op), then 3-line fix made both pass
+  - stop() updates hardware_cursor_row after cursor move — keeps state consistent in case stop() is called multiple times (defensive)
+  - The fix is write+flush, not buffered into sync markers — stop() is a one-time terminal teardown, not a render frame
+## Task self-review PASSED
+---
+
+## Iteration 4 - US-REVIEW-PHASE1: Review foundation (re-review after US-007a fix)
+- What was done: Re-reviewed all 6 source files (terminal.rs, utils.rs, component.rs, tui.rs, components/mod.rs, lib.rs) after US-007a cursor fix. All 111 tests pass. Zero clippy warnings. Verified US-007a fix is clean and correct. Full cross-task analysis passed.
+- Files changed: PRD.md (review task marked [x]), progress.txt (this entry)
+
+### Per-task re-evaluation (all PASS):
+- US-001 (scaffolding): Clean workspace. image dev-dep deferred to US-016.
+- US-002 (Terminal trait): Minimal 7-method trait + as_any for test downcasting.
+- US-003 (ANSI utils): Correct CSI/OSC/APC parsing. 24 tests.
+- US-004 (visible_width): Tab=3, grapheme-aware truncation, ANSI passthrough. 18 tests.
+- US-005 (Component/Container): Minimal trait. child_mut returns &mut Box correctly. 11 tests.
+- US-006 (TUI engine): Single-write rendering, sync markers, reset suffixes. 20 tests.
+- US-007 (Differential rendering): All three paths verified by tracing. 13 tests.
+- US-007a (stop cursor fix): Clean 3-line fix with 2 tests. Verified correct.
+- US-008 (Async event loop): select!, focus forwarding, channel lifecycle. 9 async tests.
+
+### Cross-task analysis (all clean):
+- Component trait: ergonomic, only render() required. No fighting with Rust ownership.
+- Terminal trait: minimal, event reading outside trait works cleanly via channels.
+- Differential rendering math: traced all paths (first, width-change, differential, shrink, grow-from-empty, shrink-to-empty). Correct.
+- visible_width: correctly deferred—not needed in engine yet, components pad their own output.
+- Event loop: channel-closed handled (else => break), reader aborted on exit.
+- Focus management: index-based, key forwarded before handler. Invalid index safely returns None.
+- TUI<E>: E: Send + 'static only. Components unaware of E. TUI<()> works.
+- No duplication between modules. Consistent naming/style. Clean unidirectional data flows.
+
+## Phase 1 review PASSED
+- Learnings for future iterations:
+  - Iterative review works: first pass found a real bug, fix was clean, second pass confirmed everything is solid
+  - The hardware_cursor_row/cursor_row distinction is the most subtle part of the codebase — well documented now
+  - 111 tests provide strong coverage for the foundation layer
+---
