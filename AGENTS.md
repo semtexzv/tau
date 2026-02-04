@@ -1,5 +1,10 @@
 # AGENTS.md — Reusable Patterns for rtui
 
+## Git Workflow
+- **Push frequently.** After completing every 1–2 user stories (or any review task), commit and `git push`.
+- Don't let work accumulate locally — if tests pass and the task is done, push it.
+- Use descriptive commit messages: `feat:`, `fix:`, `chore:`, `docs:` prefixes.
+
 ## Trait Object Downcasting
 - Terminal trait has `as_any(&self) -> &dyn Any` and `as_any_mut(&mut self) -> &mut dyn Any`
 - In tests, downcast via: `tui.terminal.as_any().downcast_ref::<MockTerminal>().unwrap()`
@@ -58,3 +63,14 @@
 - `slice_from_column()` in utils.rs returns `(sgr_prefix, remaining)` — tracks active SGR state while skipping columns
 - `truncate_to_width(s, col, "")` is the "slice before column" operation
 - SGR utilities (`is_sgr`, `update_sgr_state`, `sgr_prefix`) are `pub(crate)` in utils.rs
+
+## tau-rt Shared Runtime (US-RT-001)
+- cdylib-only crate: `crate-type = ["cdylib"]`. `cargo test -p tau-rt` still works (test harness compiles differently from library target)
+- Global singletons via `OnceLock<Reactor>` and `OnceLock<Executor>` — initialized lazily on first access
+- Use `async_task::spawn` (not `spawn_local`) for the executor — `spawn_local` panics when Runnables are run/dropped on a different thread, which happens in parallel test execution
+- Executor tests need a `Mutex<()>` serialization guard + queue drain at test start, because the global ConcurrentQueue is shared across test threads
+- IO sources lazily registered with OS poller: `io_register` only adds to slab, `io_poll_readable/writable` calls `Poller::add` on first interest. This avoids `Event::none` registration issues on some platforms
+- Timers use dual data structure: `BTreeMap<(Instant, u64), Waker>` for ordered expiry scan + `HashMap<u64, Instant>` for O(1) cancel/poll by handle
+- `react()` collects events into Vec<(usize, bool, bool)> before locking sources — avoids holding events and sources locks simultaneously
+- `FfiContext<'_>` has a `with_context()` inherent method (NOT `ContextExt` trait) to convert back to `std::task::Context` and extract the Waker
+- All 11 C ABI exports visible via `nm -gU libtau_rt.dylib | grep tau_rt`

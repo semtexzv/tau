@@ -547,14 +547,14 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 > **No crate in the workspace may depend on tokio, async-io, smol, async-std, or reqwest.**
 > HTTP is built from TCP + TLS + httparse in `tau-http`.
 
-### US-RT-001: tau-rt cdylib with reactor and executor [ ]
+### US-RT-001: tau-rt cdylib with reactor and executor [x]
 
 **Description:** As a developer, I need the core shared runtime library that owns
 the reactor (IO polling + timers) and a single-threaded task executor, exposed
 entirely through C ABI.
 
 **Acceptance Criteria:**
-- [ ] `crates/tau-rt/Cargo.toml`:
+- [x] `crates/tau-rt/Cargo.toml`:
   ```toml
   [lib]
   crate-type = ["cdylib"]  # ONLY cdylib. No rlib.
@@ -566,19 +566,19 @@ entirely through C ABI.
   slab = "0.4"
   concurrent-queue = "2"
   ```
-- [ ] `crates/tau-rt/src/lib.rs` — re-exports C ABI functions only
-- [ ] **Reactor** (`src/reactor.rs`):
+- [x] `crates/tau-rt/src/lib.rs` — re-exports C ABI functions only
+- [x] **Reactor** (`src/reactor.rs`):
   - Global `OnceLock<Reactor>` singleton (inside this .so only)
-  - `Reactor` struct: `polling::Poller`, `Mutex<Slab<Arc<Source>>>` for IO sources,
+  - `Reactor` struct: `polling::Poller`, `Mutex<Slab<Source>>` for IO sources,
     `Mutex<BTreeMap<(Instant, u64), Waker>>` for timers, `Mutex<Events>` for polling buffer
   - `react(timeout: Option<Duration>)`: process expired timers → poll OS → wake ready tasks
   - IO and timers share the same wake behavior: store waker on register, fire waker on ready
-- [ ] **Executor** (`src/executor.rs`):
+- [x] **Executor** (`src/executor.rs`):
   - Task queue backed by `ConcurrentQueue<Runnable>` (from `async-task`)
-  - `spawn(FfiFuture<()>)`: wraps in `async-task::spawn_local`, pushes `Runnable` to queue
+  - `spawn(FfiFuture<()>)`: wraps in `async-task::spawn`, pushes `Runnable` to queue
   - `try_tick() -> bool`: pops one `Runnable`, polls it, returns whether work was done
   - `block_on(FfiFuture<()>)`: loop { try_tick(); react(timeout); } until future completes
-- [ ] **C ABI exports** (`src/ffi.rs`) — all `#[no_mangle] pub extern "C"`:
+- [x] **C ABI exports** (`src/ffi.rs`) — all `#[no_mangle] pub extern "C"`:
   - `tau_rt_io_register(fd: i32) -> u64`
   - `tau_rt_io_deregister(handle: u64)`
   - `tau_rt_io_poll_readable(handle: u64, cx: *mut FfiContext) -> u8` (0=Pending, 1=Ready)
@@ -590,11 +590,11 @@ entirely through C ABI.
   - `tau_rt_try_tick() -> u8` (0=no work, 1=did work)
   - `tau_rt_react(timeout_ms: u64) -> i32` (0=ok, -1=error)
   - `tau_rt_block_on(future: FfiFuture<()>)`
-- [ ] `cargo build -p tau-rt` produces `libtau_rt.dylib` / `libtau_rt.so`
-- [ ] No dependency on tokio, async-io, smol, async-std, reqwest
+- [x] `cargo build -p tau-rt` produces `libtau_rt.dylib` / `libtau_rt.so`
+- [x] No dependency on tokio, async-io, smol, async-std, reqwest
 
 **Design Verification (DV-1):**
-- [ ] Unit test inside tau-rt: spawn a future that increments an `AtomicU64`, call `try_tick()`,
+- [x] Unit test inside tau-rt: spawn a future that increments an `AtomicU64`, call `try_tick()`,
   assert counter incremented. Timer test: create timer 50ms, call `react()` in loop, assert
   future completes within 55ms.
 
