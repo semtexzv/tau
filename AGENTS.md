@@ -162,3 +162,12 @@ gh issue edit <dependent-issue> --remove-label blocked
 - `react()` collects events into Vec<(usize, bool, bool)> before locking sources — avoids holding events and sources locks simultaneously
 - `FfiContext<'_>` has a `with_context()` inherent method (NOT `ContextExt` trait) to convert back to `std::task::Context` and extract the Waker
 - All 11 C ABI exports visible via `nm -gU libtau_rt.dylib | grep tau_rt`
+
+## Vendored crossterm Patching (US-RT-002b)
+- crossterm is vendored at `vendor/crossterm` as a git submodule
+- Workspace `[patch.crates-io]` maps crossterm to the vendored path
+- `event-stream` feature uses tau-iface AsyncFd (no mio/thread); `events` feature keeps mio for sync `poll()`/`read()`
+- tau-tui depends on crossterm with `default-features = false, features = ["event-stream", "bracketed-paste"]` — avoids pulling mio via `default` feature's `events`
+- `cargo test -p tau-tui` requires `LIBRARY_PATH=target/debug` (and build tau-rt first) for libtau_rt.dylib
+- Changes to crossterm source files require committing inside the submodule first (`cd vendor/crossterm && git commit`), then staging the submodule reference in the parent repo
+- `async_ffi::ContextExt::with_ffi_context` bridges `std::task::Context` to `FfiContext` for calling tau-rt FFI from poll_next

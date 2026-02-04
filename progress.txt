@@ -443,3 +443,32 @@ Fix inserted as US-012a: Input scroll and padding must operate consistently in c
   - `cargo test -p tau-iface` requires `LIBRARY_PATH=target/debug` to find libtau_rt.dylib at link time
 ## Task self-review PASSED
 ---
+
+## Iteration 1 - US-RT-002b: Patch crossterm EventStream to use tau-iface
+- What was done: Patched vendored crossterm's EventStream to use tau_iface::AsyncFd instead of blocking thread + mio waker. Rewrote stream.rs completely. Updated feature gates across 6 crossterm source files. Added workspace [patch.crates-io] for crossterm. Set tau-tui to use default-features=false.
+- Files changed:
+  - Cargo.toml (workspace patch)
+  - Cargo.lock (updated crossterm resolution)
+  - crates/tau-tui/Cargo.toml (default-features=false, event-stream+bracketed-paste)
+  - vendor/crossterm/Cargo.toml (tau-iface, async-ffi as optional deps; event-stream decoupled from events)
+  - vendor/crossterm/src/lib.rs (event module gate: any(events, event-stream))
+  - vendor/crossterm/src/event.rs (gate filter/read/source/timeout/poll/read behind events)
+  - vendor/crossterm/src/event/stream.rs (complete rewrite: AsyncFd + self-pipe SIGWINCH + inline Parser)
+  - vendor/crossterm/src/event/sys.rs (Waker re-export needs both events+event-stream)
+  - vendor/crossterm/src/event/sys/unix.rs (parse: any(events, event-stream); waker: both)
+  - PRD.md (acceptance criteria marked [x])
+- Learnings for future iterations:
+  - crossterm's `default` features include `events` which pulls in mio — must use `default-features = false` when only `event-stream` is needed
+  - The `event` module in crossterm's lib.rs was gated behind `events` only — needed `any(events, event-stream)` to make EventStream accessible without sync polling
+  - Feature decoupling required careful analysis: `read.rs`, `source.rs`, `filter.rs`, `timeout.rs` all depend on mio-based EventSource and must be gated behind `events`
+  - `parse_event` (in sys/unix/parse.rs) is the only shared code between events and event-stream — all other internal modules are events-only
+  - AsyncFd in tau-iface does NOT own the fd — caller must close fds manually (important for pipe read-end in Drop)
+  - Drop body runs BEFORE struct field destructors — reactor's io_deregister ignores EBADF so closing pipe fd before AsyncFd drops is safe
+  - Raw FFI declarations for pipe/signal/fcntl avoid pulling in libc crate (crossterm defaults to rustix)
+  - SIGWINCH self-pipe pattern: signal handler writes 1 byte, pipe read-end registered with reactor, poll_next checks both stdin and sigwinch fds
+  - `async_ffi::ContextExt::with_ffi_context` bridges std::task::Context to FfiContext for calling tau-rt FFI from within poll_next
+  - Global AtomicI32 for pipe write-end fd — acceptable since crossterm only supports one event reader at a time (global INTERNAL_EVENT_READER)
+  - The Parser is duplicated from source/unix/mio.rs (~50 lines) rather than extracted to shared module — keeps event-stream independent of events feature
+  - `cargo test -p tau-tui` requires `LIBRARY_PATH=target/debug` to find libtau_rt.dylib at link time
+## Task self-review PASSED
+---
