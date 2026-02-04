@@ -224,3 +224,19 @@ Fix inserted as US-007a: TUI::stop() must move cursor from hardware_cursor_row t
   - `saturating_sub` for inner_width handles case where padding exceeds width
 ## Task self-review PASSED
 ---
+
+## Iteration 8 - US-012: Input component
+- What was done: Implemented Input component in src/components/input.rs. Single-line text input with "> " prompt, inverse-video cursor, full editing keybindings (insert, backspace, delete, word-delete, ctrl-u, ctrl-k), cursor movement (left, right, home, end, ctrl-left word-back, ctrl-right word-forward), horizontal scrolling via compute_scroll pure function, on_submit/on_escape callbacks, value()/set_value() API, focused flag. scroll_offset uses Cell<usize> for interior mutability in render(&self). 28 tests covering all editing ops, cursor movement, scrolling, callbacks, rendering. All 189 tests pass.
+- Files changed: crates/tau-tui/src/components/input.rs (new), crates/tau-tui/src/components/mod.rs (module registration), PRD.md
+- Learnings for future iterations:
+  - Cell<usize> (not RefCell) is sufficient for scroll_offset since usize is Copy — simpler than RefCell
+  - compute_scroll is a pure function: takes (cursor, current_offset, available) → new_offset. Separated from render logic for testability.
+  - Scroll offset must be persisted between renders for smooth scrolling — without persistence, moving cursor left causes the view to jump back to start
+  - render(&self) can't mutate fields directly — use Cell/RefCell for state that needs updating during render
+  - Cursor operates on char indices, conversion to byte positions via char_to_byte helper
+  - Word movement: skip spaces then skip word-chars (or vice versa) — simple two-phase algorithm
+  - handle_input doesn't know the width, so scroll adjustment is deferred to render() which does know
+  - \x1b[7m / \x1b[27m for inverse video cursor — 7m enables, 27m disables (not 0m which would reset everything)
+  - Callbacks use `Option<Box<dyn FnMut>>` — clone the value before calling to avoid borrow issues
+## Task self-review PASSED
+---

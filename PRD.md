@@ -401,28 +401,28 @@ The `Agent` struct never awaits. It receives events, updates state, and returns 
 - [x] `cargo test` passes
 - [x] `cargo check` passes
 
-### US-013: SelectList component [ ]
+### US-013: SelectList component [x]
 
 **Description:** As a user, I want a selectable list with arrow-key navigation so I can pick from options.
 
 **Acceptance Criteria:**
-- [ ] `SelectList` struct in `src/components/select_list.rs` implementing `Component`
-- [ ] `SelectItem { value: String, label: String, description: Option<String> }`
-- [ ] Constructor: `new(items, max_visible)`
-- [ ] Renders visible window of items, selected item has `→` prefix and distinct styling (bold/inverse)
-- [ ] Arrow Up/Down changes selection (wraps around)
-- [ ] Enter triggers `on_select` callback, Escape triggers `on_cancel`
-- [ ] Scrolls when selection moves outside visible window
-- [ ] Shows scroll indicator `(N/M)` when list is scrollable
-- [ ] `set_filter(query)` — filters items by prefix match
-- [ ] `selected_item() -> Option<&SelectItem>`
-- [ ] Tests:
+- [x] `SelectList` struct in `src/components/select_list.rs` implementing `Component`
+- [x] `SelectItem { value: String, label: String, description: Option<String> }`
+- [x] Constructor: `new(items, max_visible)`
+- [x] Renders visible window of items, selected item has `→` prefix and distinct styling (bold/inverse)
+- [x] Arrow Up/Down changes selection (wraps around)
+- [x] Enter triggers `on_select` callback, Escape triggers `on_cancel`
+- [x] Scrolls when selection moves outside visible window
+- [x] Shows scroll indicator `(N/M)` when list is scrollable
+- [x] `set_filter(query)` — filters items by prefix match
+- [x] `selected_item() -> Option<&SelectItem>`
+- [x] Tests:
   - Renders correct number of visible items
   - Selection moves with Up/Down
   - Wraps from top to bottom and vice versa
   - Filter narrows visible items
-- [ ] `cargo test` passes
-- [ ] `cargo check` passes
+- [x] `cargo test` passes
+- [x] `cargo check` passes
 
 ### US-014: Overlay system [ ]
 
